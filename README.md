@@ -3,7 +3,7 @@
 Rebuilt scaffold for the first two floors (Floor50 / Dormitory, Floor40 / Sensory Lab) per design outlines. Python 3.9+, Pygame 2.5+.
 
 ## Run
-- From repo root (`e:\files\coding`): `python -m MindscapeArk.src.main`
+- From repo root : `python -m MindscapeArk.src.main`
 - Click Start to enter Floor50. Controls: WASD/Arrow keys manual move (cancels path); Right-click auto-path (A*); Left mouse or Space to fire toward the mouse; F to interact; R to reload; ESC quits; F2 jumps to Floor40 (test). Keep input method in English so shortcuts work.
 - Camera stays centered on player; map is scaled up (MAP_SCALE=3).
 

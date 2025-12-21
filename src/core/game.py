@@ -1031,3 +1031,9 @@ class Game:
         # text (wrap simple by splitting) but single line for now
         text_surf = self.font_dialog.render(shown_text, True, settings.DIALOG_TEXT)
         self.screen.blit(text_surf, (pad, y_base + speaker_surf.get_height() + 8))
+        if self.cutscene_done_line:
+            hint = "点击任意键继续"
+            hint_surf = self.font_prompt.render(hint, True, settings.DIALOG_TEXT)
+            hint_x = settings.WINDOW_WIDTH - hint_surf.get_width() - pad
+            hint_y = settings.WINDOW_HEIGHT - overlay_h + overlay_h - hint_surf.get_height() - settings.DIALOG_PADDING
+            self.screen.blit(hint_surf, (hint_x, hint_y))
