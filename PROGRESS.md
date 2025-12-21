@@ -1,0 +1,29 @@
+# Progress Log
+
+- Recreated project scaffold after cleanup (src/core, systems, maps, assets, data, tests).
+- Start menu with layered title/button; game starts into Floor50.
+- Map loader + collision + play loop with 2px movement; trigger-based floor swap (F50 -> F40; F2 hotkey test).
+- Floor visuals copied to `assets/images/Floor50.png` and `Floor40.png`; collision JSONs (2px cells) at `assets/maps/floor50.json` and `floor40.json`.
+- Added map scaling (MAP_SCALE=3) and camera centered on player; minimap showing walkable cells and player marker.
+- Added right-click A* auto-pathing (grid-based) with path-follow movement; manual arrow keys cancel path.
+- Added player sprite loader (`assets/images/player.png` with PLAYER_SCALE=3) with rectangle fallback.
+- Floor40 collision corrected (elevator zone marked walkable).
+- Pathfinding upgraded to 8-direction A* with octile heuristic, corner-cut prevention, and clearance checks using player size; auto-path now replans/advances when blocked instead of stalling.
+- Floor50 collision grid rebuilt from `assets/images/Floor50_mask.png` (white walkable, green blocked) at 2px resolution; ensured spawn cell stays walkable.
+- Interaction system added: proximity prompts (按F查看/乘坐) and dialog overlay; terminals/frames show text, exits require F instead of auto-trigger.
+- Debug overlay: bottom-right live player coordinates for testing.
+- Interaction prompt radius increased to 50 map px for easier activation.
+- Pathfinding click fallback: clicking an unreachable cell now auto-reroutes to the nearest reachable cell respecting clearance, instead of failing.
+- Fallback search is limited to 10px; if no reachable cell is within that range, the click is ignored.
+- Path-following: reduced false "stuck" skips—only skip when no movement occurred; clears goal when path finishes to prevent early stop.
+- Added right-click visual feedback: shrinking circle at click position.
+- Click feedback shrinks faster (duration 0.2s).
+- Added WASD/arrow manual move at same speed as auto-path, with diagonal combos; opposite keys lock movement until both released; manual input cancels auto-path and has priority.
+- Collision box shifted downward (offset to feet) so collisions are checked near the legs.
+- Intro boot/reveal sequence added; flows into guided cutscene with typewriter dialog.
+- Guidance dialog expanded to include tutorials: move (WASD/Arrows), fire (LMB/Space toward cursor), interact (F), reload (R), right-click auto-path, and English input method reminder.
+- Quest/task system with stages (intro, explore, elevator) and HUD under minimap; elevator remains locked until the log is read, then updates to “乘坐电梯前往F40”.
+- Elevator interaction now shows locked dialog when gated; unlocks after log interaction; quest stage setter toggles elevator lock.
+- Dialog overlay improved: space closes active dialogs (prevents firing while dialog is visible); camera stays stable during cutscenes before rendering.
+- Left mouse now fires (same as space) toward mouse direction; fire direction already follows cursor.
+- Font resolution now auto-loads bundled fonts from `assets/fonts` (prefers NotoSansSC) before system fallbacks; start menu uses resolved font.

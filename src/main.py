@@ -1,0 +1,12 @@
+"""Entrypoint for MindscapeArk."""
+
+from .core.game import Game
+
+
+def main() -> None:
+    game = Game()
+    game.run()
+
+
+if __name__ == "__main__":
+    main()
