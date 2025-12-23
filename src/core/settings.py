@@ -65,12 +65,26 @@ GUN_BULLET_LIFETIME = 1.5
 GUN_BULLET_RADIUS = 3
 GUN_BULLET_COLOR = (255, 235, 120)
 
+# Enemies (tutorial placeholders)
+ENEMY_COLOR = (255, 120, 140)
+ENEMY_RADIUS = 14
+ENEMY_HITS_TO_KILL = 2
+
 # Interaction mask
 INTERACT_MASKS = {
     "F50": IMAGES_DIR / "Floor50_mask.png",
     "F40": None,
 }
 INTERACT_MASK_RADIUS = 12  # map pixels radius to consider near a red zone
+
+# Interaction zones (map coordinates, unscaled)
+INTERACT_ZONES = {
+    "F50": [
+        {"id": "elevator", "type": "exit", "rect": (50, 195, 110, 215), "to_floor": "F40"},
+        {"id": "family_photo", "type": "frame", "rect": (275, 115, 305, 130)},
+        {"id": "log_kaines_001", "type": "terminal", "rect": (190, 89, 305, 140)},
+    ],
+}
 
 # Fonts
 FONT_CJK = None  # resolved at runtime from fonts directory

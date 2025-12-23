@@ -42,6 +42,8 @@ class Game:
         self._keys_down: set[int] = set()
         self._held_dirs = {"left": False, "right": False, "up": False, "down": False}
         self.bullets: list[dict] = []
+        self.enemies: list[dict] = []
+        self.combat_active = False
         self.ammo_in_clip = settings.GUN_CLIP_SIZE
         self.reload_timer = 0.0
         self.fire_cooldown = 0.0
@@ -93,6 +95,8 @@ class Game:
         self._keys_down.clear()
         self._held_dirs = {"left": False, "right": False, "up": False, "down": False}
         self.bullets.clear()
+        self.enemies.clear()
+        self.combat_active = False
         self.ammo_in_clip = settings.GUN_CLIP_SIZE
         self.reload_timer = 0.0
         self.fire_cooldown = 0.0
@@ -292,6 +296,7 @@ class Game:
         self.screen.fill(settings.BACKGROUND_COLOR)
         if self.map_surface:
             self.screen.blit(self.map_surface, self.map_offset)
+        self._draw_enemies()
         self._draw_bullets()
         player_screen_pos = (settings.WINDOW_WIDTH // 2, settings.WINDOW_HEIGHT // 2)
         if self.player_sprite:
@@ -507,12 +512,29 @@ class Game:
         max_y = len(self.map_data.collision_grid)
         max_x = len(self.map_data.collision_grid[0]) if max_y else 0
         next_bullets: list[dict] = []
+        any_enemy_removed = False
         for b in self.bullets:
             b["ttl"] -= dt
             if b["ttl"] <= 0:
                 continue
             b["x"] += b["vx"] * dt
             b["y"] += b["vy"] * dt
+            # enemy hit check
+            hit_enemy = None
+            hit_radius_sq = (settings.ENEMY_RADIUS + settings.GUN_BULLET_RADIUS) ** 2
+            for enemy in self.enemies:
+                dx = enemy["x"] - b["x"]
+                dy = enemy["y"] - b["y"]
+                if dx * dx + dy * dy <= hit_radius_sq:
+                    hit_enemy = enemy
+                    break
+            if hit_enemy:
+                hit_enemy["hits"] -= 1
+                if hit_enemy["hits"] <= 0:
+                    hit_enemy["dead"] = True
+                    any_enemy_removed = True
+                continue  # bullet consumed on hit
+
             cx = int(b["x"] // cell_px)
             cy = int(b["y"] // cell_px)
             if cx < 0 or cy < 0 or cx >= max_x or cy >= max_y:
@@ -521,6 +543,47 @@ class Game:
                 continue
             next_bullets.append(b)
         self.bullets = next_bullets
+        if any_enemy_removed:
+            self.enemies = [e for e in self.enemies if not e.get("dead")]
+            if not self.enemies and self.combat_active:
+                self._on_enemies_cleared()
+
+    def _start_log_sequence(self) -> None:
+        pass
+
+    def _spawn_tutorial_enemies(self) -> None:
+        if not self.map_surface:
+            return
+        base_x, base_y = self.player_rect.center
+        map_w, map_h = self.map_surface.get_size()
+        offsets = [(120, -40), (-120, 40), (0, 120)]
+        spawned: list[dict] = []
+        for ox, oy in offsets:
+            x = max(20, min(map_w - 20, base_x + ox))
+            y = max(20, min(map_h - 20, base_y + oy))
+            spawned.append({
+                "x": float(x),
+                "y": float(y),
+                "hits": settings.ENEMY_HITS_TO_KILL,
+                "dead": False,
+            })
+        self.enemies = spawned
+        self.combat_active = True
+
+    def _on_enemies_cleared(self) -> None:
+        self.combat_active = False
+        self._set_quest_stage("elevator")
+
+    def _draw_enemies(self) -> None:
+        if not self.enemies:
+            return
+        r = settings.ENEMY_RADIUS
+        color = settings.ENEMY_COLOR
+        ox, oy = self.map_offset
+        for e in self.enemies:
+            sx = int(e["x"] + ox)
+            sy = int(e["y"] + oy)
+            pygame.draw.circle(self.screen, color, (sx, sy), r)
 
     def _draw_bullets(self) -> None:
         if not self.bullets:
@@ -614,32 +677,36 @@ class Game:
         self.screen.blit(mini, (pad, pad))
 
     # --- Interaction helpers ---
+    def _interaction_zones(self) -> list[dict]:
+        zones = settings.INTERACT_ZONES.get(self.current_floor, [])
+        scale = settings.MAP_SCALE
+        scaled: list[dict] = []
+        for z in zones:
+            x1, y1, x2, y2 = z["rect"]
+            scaled.append({**z, "rect": (int(x1 * scale), int(y1 * scale), int(x2 * scale), int(y2 * scale))})
+        return scaled
+
+    def _interaction_allowed(self, trig: dict) -> bool:
+        t = trig.get("type")
+        if t == "terminal" and self.quest_stage not in {"log", "elevator"}:
+            return False
+        if t == "frame" and self.quest_stage not in {"explore", "log"}:
+            return False
+        return True
+
     def _update_interaction_prompt(self) -> None:
         self.interaction_target = None
         if not self.map_data:
             return
-        if not self._player_in_interact_zone():
-            return
         px, py = self.player_rect.center
-        radius = settings.INTERACT_RADIUS * settings.MAP_SCALE
-        best = None
-        best_dist = 1e9
-        for trig in self.map_data.triggers:
-            tx, ty = trig.get("at_pixel", [0, 0])
-            tx = int(tx * settings.MAP_SCALE)
-            ty = int(ty * settings.MAP_SCALE)
-            dist = ((px - tx) ** 2 + (py - ty) ** 2) ** 0.5
-            if dist <= radius and dist < best_dist:
-                best = trig
-                best_dist = dist
-        self.interaction_target = best
+        for trig in self._interaction_zones():
+            x1, y1, x2, y2 = trig["rect"]
+            if x1 <= px <= x2 and y1 <= py <= y2 and self._interaction_allowed(trig):
+                self.interaction_target = trig
+                break
 
     def _player_in_interact_zone(self) -> bool:
-        if not self.interact_mask:
-            return True
-        px = int(self.player_rect.centerx / settings.MAP_SCALE)
-        py = int(self.player_rect.centery / settings.MAP_SCALE)
-        return self._mask_has_red(px, py, settings.INTERACT_MASK_RADIUS)
+        return True
 
     def _mask_has_red(self, x: int, y: int, radius: int) -> bool:
         if not self.interact_mask:
@@ -649,8 +716,8 @@ class Game:
         for yy in range(max(0, y - r), min(h - 1, y + r) + 1):
             for xx in range(max(0, x - r), min(w - 1, x + r) + 1):
                 color = self.interact_mask.get_at((xx, yy))
-                # Treat red if it is dominant and not dark; accept slight anti-aliased edges
-                if color.r > 100 and color.r > color.g + 20 and color.r > color.b + 20:
+                # Treat warm/red/orange as interactable (dominant red component)
+                if color.r > 80 and color.r >= color.g + 10 and color.r >= color.b + 10:
                     return True
         return False
 
@@ -668,7 +735,7 @@ class Game:
         t = trig.get("type")
         if t == "exit" and "to_floor" in trig:
             if self.current_floor == "F50" and self.elevator_locked:
-                self._show_dialog(["电梯未解锁。请先完成当前任务。"], title="指引者")
+                self._show_dialog(["这个电梯怎么开呢？"], title="提示")
                 return
             next_floor = trig["to_floor"]
             if next_floor in settings.MAP_FILES:
@@ -676,14 +743,20 @@ class Game:
                 self._load_floor(settings.MAP_FILES[next_floor])
             return
         if t == "terminal":
-            msg = self._terminal_message(trig.get("id", ""))
+            if not self._interaction_allowed(trig):
+                return
+            term_id = trig.get("id", "")
+            msg = self._terminal_message(term_id)
             self._show_dialog(msg, title="终端")
-            self._maybe_complete_explore()
+            if term_id == "log_kaines_001":
+                self._set_quest_stage("elevator")
             return
         if t == "frame":
+            if not self._interaction_allowed(trig):
+                return
             msg = self._frame_message(trig.get("id", ""))
             self._show_dialog(msg, title="相框")
-            self._maybe_complete_explore()
+            self._set_quest_stage("log")
             return
         # fallback
         self._show_dialog(["没有可以操作的反应。"], title="提示")
@@ -691,7 +764,11 @@ class Game:
     def _terminal_message(self, term_id: str) -> list[str]:
         if term_id == "log_kaines_001":
             return [
-                "终端：安全日志片段", "", "Kaines：", "· 第50层宿舍，电源仍稳定。", "· 收容间有三处异常活动记录。", "· 如果你读到这行，尽快下行。"
+                "DR. KAINES LOG - ENTRY 001",
+                "认知锚定：成功。",
+                "受试体 \"Custodian\" 已相信首要任务为 \"拯救方舟\"。",
+                "生命体征：稳定。现实阻抗：0.2%。",
+                "继续推进第一阶段。",
             ]
         return ["终端无响应。"]
 
@@ -790,6 +867,8 @@ class Game:
             return ["任务：等待系统初始化"]
         if self.quest_stage == "explore":
             return ["任务：探索房间", "目标：查看桌上日志"]
+        if self.quest_stage == "log":
+            return ["任务：查看终端日志"]
         if self.quest_stage == "elevator":
             return ["任务：乘坐电梯前往F40"]
         return []
@@ -1001,14 +1080,8 @@ class Game:
         self.quest_stage = stage
         if stage == "elevator":
             self.elevator_locked = False
-        if stage == "intro":
+        if stage in {"intro", "explore", "combat", "log"}:
             self.elevator_locked = True
-        if stage == "explore":
-            self.elevator_locked = True
-
-    def _maybe_complete_explore(self) -> None:
-        if self.quest_stage == "explore":
-            self._set_quest_stage("elevator")
 
     def _draw_cutscene_dialog(self) -> None:
         line = self._current_cutscene_line()
