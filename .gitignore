@@ -1,0 +1,26 @@
+# === 敏感信息（绝对不能上传）===
+.env
+.env.local
+.env.*.local
+*.key
+secrets.json
+
+# === Python/uv 环境 ===
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+
+# === 编辑器配置 ===
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# === uv 缓存（可选，看你需求）===
+.uv_cache/
