@@ -1,0 +1,515 @@
+《MINDSCAPE: ARK》- 技术设计与脚本文档 (v1.0)
+
+第1层：休眠舱 (Dormitory - Floor 50)
+
+A. 地图技术规格
+
+· 主题：无菌，未来主义，略带生活气息的囚笼。
+· 色调：冷灰色（#5a5a5a）与医疗蓝色（#2a5c7a）。
+· 尺寸：房间大小为10x10个游戏单位（可视为格子）。
+· 布局与物件清单：
+  1. 玩家出生点：位于房间左下角（坐标1,1）的床。
+  2. 床：位于（1,1）至（2,2）区域。简单模型，无交互。
+  3. 办公桌：位于房间右上角（坐标8,8）。占据2x1格子。
+  4. 电子相框：放置在办公桌上（坐标8.5, 8.5）。交互触发点。
+  5. 终端机：放置在办公桌左侧（坐标7.8, 8.5）。交互触发点。
+  6. 门：位于左侧墙壁中央（坐标1,5）。初始状态被红色激光栅栏（视觉特效）封锁。
+  7. 数据畸变体生成点：三个固定位置。
+     · 畸变体1：坐标（3,3）
+     · 畸变体2：坐标（7,3）
+     · 畸变体3：坐标（5,7）
+· 光照：均匀的顶光。电子相框闪烁时为局部脉冲光源。
+
+B. 逐步骤剧情脚本
+
+1. 【系统启动】
+   · 触发：玩家按下“新游戏”。
+   · 动作：
+     · 屏幕显示全屏像素乱码动画，伴随电子音效。
+     · 乱码汇聚成文字：//BOOT_SEQUENCE_INITIATED...
+     · 文字淡出，游戏画面以像素块构建动画的形式加载出整个休眠舱房间。
+     · 玩家角色在床上由虚到实显现，并执行“坐起”的动画。
+     · 指引者UI（一个简洁的蓝色HUD）在屏幕上方激活。
+     · 指引者（语音+文字）："System online. Welcome back, Custodian. Initializing environmental scan..."
+2. 【移动教学】
+   · 触发：指引者语音结束。
+   · 动作：
+     · 屏幕上出现一个鼠标左键的图标，并高亮办公桌区域。
+     · 指引者："Please proceed to the desk for status report."
+     · 完成条件：玩家移动角色至办公桌1.5个单位范围内。
+     · 完成反馈：鼠标左键图标消失。
+3. 【首次异常】
+   · 触发：玩家进入办公桌1.5个单位范围内。
+   · 动作：
+     · 电子相框发出“啪”的短促音效，屏幕图像瞬间切换为一张高分辨率、风格写实的全家福照片（与像素风形成强烈对比），照片上有父母和孩子，笑容灿烂。
+     · 0.5秒后，相框恢复为默认的几何线条图案。
+     · 指引者（语音+文字，带有一丝干扰杂音）："Warning: Minor data redundancy detected in local storage. Purged."
+4. 【日志阅读】
+   · 触发：玩家点击终端机。
+   · 动作：
+     · 屏幕中央弹出日志界面。
+     · 日志文本：
+       [DR. KAINES LOG - ENTRY 001]
+       Cognitive Anchoring successful.
+       Subject "Custodian" believes primary objective is "Save the Ark".
+       Vital signs stable. Reality impedance: 0.2%.
+       Proceeding to Phase 1.
+     · 玩家点击“关闭”后，日志界面消失。
+5. 【战斗教学】
+   · 触发：关闭日志界面。
+   · 动作：
+     · 在三个预设生成点，同时生成3只“基础数据畸变体”（缓慢移动的蓝色像素光球，带有简单的“脉动”动画）。
+     · 屏幕上出现一个鼠标右键的图标。
+     · 指引者："Hostile data fragments detected. Please neutralize them using right-click. Ammunition is unlimited during this calibration."
+     · 完成条件：所有3只畸变体被消灭。
+     · 完成反馈：鼠标右键图标消失。封锁门的红色激光栅栏特效消失，并发出“嗡”的一声关闭音效。
+6. 【任务更新】
+   · 触发：门解锁。
+   · 动作：
+     · 指引者："Path clear. Proceed to the Elevator. Our destination: The Oracle, at the foundation."
+     · 任务目标更新为：> Enter the Elevator
+
+---
+
+第2层：感官实验室 (Sensory Lab - Floor 40)
+
+A. 地图技术规格
+
+· 主题：混乱，非欧几里得空间，高科技实验场。
+· 色调：不稳定的品红色（#b13c7c）与电子绿色（#3cb371）。
+· 尺寸：主回廊通道宽2个单位，总长度约40个单位，形成“回”字形。
+· 布局与物件清单：
+  1. 电梯入口：位于地图西南角（坐标1,1）。
+  2. 动态陷阱路径：三条预设的路径段。
+     · 陷阱1：坐标（5,1）至（8,1）的直线走廊。
+     · 陷阱2：坐标（1,5）至（1,8）的直线走廊。
+     · 陷阱3：坐标（5,10）至（8,10）的直线走廊。
+     · 效果：这些格子会周期性变为“虚空”（黑色网格贴图）。
+  3. 逻辑错误实体NPC：固定位于第一个转弯处（坐标3,3）。
+  4. 终端机：位于电梯权限开关旁（坐标9,9）。
+  5. 电梯权限开关：位于地图东北角尽头（坐标10,10）。
+· 光照：闪烁的警示灯，光线强度随时间周期性变化。
+
+B. 逐步骤剧情脚本
+
+1. 【进入与异常】
+   · 触发：玩家走出电梯。
+   · 动作：
+     · 指引者："Sensory Lab. Environmental data is highly unstable. Exercise caution."
+     · 玩家前行约5秒（到达陷阱1附近），陷阱1的路径（3格长度）瞬间变为黑色网格状虚空，持续2秒。恢复后，原本笔直的道路变成了需要向右转的弯路。
+     · 指引者："Spatial data corrupted. Recalculating safest path."
+2. 【遭遇NPC】
+   · 触发：玩家进入NPC（坐标3,3）2个单位范围内。
+   · 动作：
+     · NPC的“跌倒-爬起”循环动画会暂停，面向玩家。
+     · 出现对话气泡。
+     · 第一次对话：NPC："Ugh... again..." （对话后NPC恢复循环动画）
+     · 第二次对话：NPC："Why... does it always hurt here?" （再次恢复动画）
+     · 第三次对话：
+       · NPC猛地停止动画，僵直地转向玩家。
+       · 对话气泡："The floor! It's breathing! Can't you feel it?!" （文字为红色，略微抖动）
+       · 指引者（语音急促）："Logical error entity detected. Its instability is a threat to the environment. Recommend elimination."
+3. 【分支抉择】
+   · 分支A：战斗
+     · 触发：玩家在对话后，右键点击NPC。
+     · 动作：
+       · NPC转化为敌对状态，冲向玩家。血量较低。
+       · 击败后，NPC身体破碎成蓝色乱码，并掉落武器逻辑破碎者（霰弹枪）。
+       · 玩家自动拾取，武器栏更新。
+   · 分支B：绕路
+     · 触发：玩家无视指引者建议，直接离开NPC区域。
+     · 动作：
+       · 通往开关的最短路径被一道突然出现的能量墙封锁。
+       · 玩家必须沿着回廊走完另外四分之三圈，途中会遭遇更多动态陷阱和少量数据畸变体。
+4. 【获取日志与通关】
+   · 触发：玩家抵达电梯权限开关（坐标10,10）。
+   · 动作：
+     · 玩家可以首先与旁边的终端机交互。
+     · 日志文本：
+       [SENSORY_DEPT - EXPERIMENT 7G]
+       Test Summary: Forced sensory contradiction.
+       Result: 87% of subjects disregarded personal sensory input when System provided alternative guidance.
+       Conclusion: Cognitive dependency is optimal. The "Anchor" holds.
+     · 点击开关，播放一个启动动画，开关由红变绿。
+     · 指引者："Access granted. Proceeding to next level."
+     · 任务目标更新为：> Descend to Memory Archive (Floor 35)
+
+第3层：记忆档案馆 (Memory Archive - Floor 35)
+
+A. 地图技术规格
+
+· 主题：幽深、混乱的数字图书馆，充满被遗忘的记忆。
+· 色调：暗蓝色 (#1a2b3c) 与故障屏幕的亮蓝色 (#00ffff) 和红色 (#ff5555)。
+· 尺寸：一个20x20单位的圆形大厅，中央BOSS区直径约8个单位。
+· 布局与物件清单：
+  1. 电梯入口：位于大厅正南方（坐标10,1）。
+  2. 档案架：从大厅边缘向中心辐射排列，高4个单位，由无数闪烁的小屏幕构成。它们形成了通往中心的迷宫式路径。
+  3. 中央BOSS区：一个直径8个单位的圆形空地，地面有复杂的电路板纹理。
+  4. 音频日志：位于BOSS区边缘的一个档案架上（坐标10,10）。
+· 光照：整体昏暗，仅由档案架屏幕的光照亮。BOSS战时，BOSS本身是主要光源。
+
+B. 逐步骤剧情脚本
+
+1. 【进入与探索】
+   · 触发：玩家走出电梯。
+   · 动作：
+     · 指引者："Memory Archive. Corrupted data has coalesced into defensive entities. Proceed with extreme caution."
+     · 玩家需要穿过由档案架构成的迷宫。迷宫中会随机刷新少量“数据畸变体”。
+     · 当玩家接近中央区域时，能听到低沉的、类似心跳的嗡鸣声。
+2. 【BOSS战：记忆吞噬者】
+   · 触发：玩家踏入中央圆形区域。
+   · 动作：
+     · 所有档案架的屏幕瞬间变为雪花，随后记忆吞噬者从地面聚合升起。
+     · BOSS形象：一个由无数破碎屏幕和杂乱电线构成的巨大球体，中心有一个红色的数据核心（弱点）。
+     · 战斗阶段：
+       · 一阶段 (100%-66%血量)：BOSS缓慢移动，每隔5秒向玩家发射3发呈扇形散开的蓝色数据球。数据球移动慢，可走位躲避。
+       · 二阶段 (66%-33%血量)：BOSS召唤2只小型的“数据畸变体”协助作战。数据球发射频率加快至每4秒一次。
+       · 三阶段 (33%-0%血量)：BOSS移动速度加快，数据球变为每3秒发射一次，且一次发射5发，覆盖范围更大。同时，它会周期性释放全屏范围的红色脉冲，玩家需躲到档案架后方规避。
+3. 【记忆闪回】
+   · 触发：BOSS被击败。
+   · 动作：
+     · BOSS核心的红光剧烈闪烁，发出刺耳的蜂鸣。
+     · 周围所有档案架上的屏幕同时亮起，快速闪过三帧画面，每帧0.8秒：
+       · 帧1：一份科研报告的封面，标题是《The Bicameral Mind Thesis》。
+       · 帧2：第一人称视角，刺眼的汽车大灯迎面冲来，伴有尖锐的刹车声。
+       · 帧3：一片无尽的黑暗与寂静。
+     · 闪回结束后，BOSS残骸化为灰烬。
+4. 【系统干预与日志】
+   · 触发：闪回结束。
+   · 动作：
+     · 指引者（声音带有明显的干扰杂音）："High-density data burst detected. Stabilizing your cognition... Ignore the fragments. They are corrupted memories from a previous life."
+     · 通往下一层电梯的门（位于大厅正北方，坐标10,20）解锁。
+     · 玩家可以在BOSS残骸旁找到音频日志。
+     · 音频日志 (Dr. Elara)："The 'death memory' implant is our most effective anchor. It severs the past completely, allowing the consciousness to fully embrace the mission. But sometimes, in the quiet moments, I wonder what beautiful, mundane memories we've overwritten... what we've taken from them."
+
+---
+
+第4层：逻辑中心 (Logic Core - Floor 30)
+
+A. 地图技术规格
+
+· 主题：秩序、冰冷、但正在崩溃的服务器农场。
+· 色调：冰冷的金属蓝 (#3a506b) 与警示性的黄色 (#ffd166)。
+· 尺寸：一个15x15单位的正方形房间。
+· 布局与物件清单：
+  1. 电梯入口：位于房间南侧中央（坐标7,1）。
+  2. 服务器机柜：整齐排列成4行4列，形成通道。部分机柜冒着火花（危险区域）。
+  3. 电源继电器 (左)：坐标（4,7）。
+  4. 电源继电器 (中)：坐标（7,7）。
+  5. 电源继电器 (右)：坐标（10,7）。
+  6. 武器箱：位于房间东北角（坐标13,13），激活所有继电器后打开。
+  7. 终端机：位于房间西北角（坐标2,13）。
+· 光照：稳定的白光，但会随着UI错误而同步闪烁。
+
+B. 逐步骤剧情脚本
+
+1. 【进入与任务】
+   · 触发：玩家走出电梯。
+   · 动作：
+     · 指引者："Logic Core. A cascading failure is imminent. You must restore power by activating the three primary relays in the correct sequence."
+     · 任务目标更新：> Restore Logic Core Power (0/3)
+2. 【UI崩坏体验】
+   · 触发：玩家靠近第一个继电器（任意一个）。
+   · 动作：
+     · 游戏UI开始出现严重故障，持续5-10秒。
+     · 任务栏文字扭曲成：//DIRECTIVE: EXTRACT_CREATIVE_SOLUTION.FROM P-7
+     · 玩家血条和弹药显示出现乱码和跳动。
+     · 指引者语音被强烈的静电噪音覆盖。
+     · 恢复后，指引者会说："Temporary interface instability. The core's corruption is affecting my systems. Proceed with the task."
+3. 【解谜与发现】
+   · 触发：玩家尝试激活继电器。
+   · 动作：
+     · 正确顺序：左 -> 右 -> 中。
+     · 错误反馈：如果顺序错误，该继电器会释放一次电弧，对玩家造成少量伤害，并重置所有继电器状态。
+     · 成功反馈：每激活一个，房间的灯光会变得更亮一点。
+     · 当第三个继电器激活时，房间恢复光明，同时房间一角的一个终端屏幕上会不受控制地显示1.5秒：[COGNITIVE_BARRIER_INTEGRITY: 64%]，然后被正常的系统信息快速覆盖。
+4. 【获取奖励】
+   · 触发：所有三个继电器激活。
+   · 动作：
+     · 东北角的武器箱“砰”地一声打开，获得熵增步枪。
+     · 西北角的终端机可以交互。
+     · 日志文本：
+       [ETHICS_COMMITTEE - MINUTES 73-A]
+       Dr. Kaines presented the case for Phase 3: The extraction of creative solutions under existential duress.
+       The question was raised: Does a simulated personality that thinks, feels, and seeks self-preservation, have a right to exist?
+       The board's decision was unanimous: For the survival of the Prime World, their sacrifice is not only acceptable, but necessary.
+       I signed the document. My pen felt very heavy.
+     · 通往下一层的电梯（位于北墙，坐标7,15）解锁。
+
+---
+
+第5层：情感共鸣器 (Pathos Resonator - Floor 25)
+
+A. 地图技术规格
+
+· 主题：抽象、扭曲的情感景观。
+· 色调：根据中央光球的情绪剧烈变化（愤怒-红色#ff6b6b，悲伤-蓝色#4ecdc4，恐惧-紫色#6a0572）。
+· 尺寸：一个25x25单位的圆形开放区域。
+· 布局与物件清单：
+  1. 电梯入口：位于正南方（坐标12,1）。
+  2. 情绪光球 (BOSS)：位于场地正中央（坐标12,12）。
+  3. 情绪茧房：7个，不规则地散布在场地边缘。每个都是一个半透明的能量场，困着一名NPC。
+  4. 音频日志：击败BOSS后，在光球原位置出现。
+· 光照：整个场景的光源和色调都由中央光球主导，随其情绪变化而剧烈波动。
+
+B. 逐步骤剧情脚本
+
+1. 【进入与氛围】
+   · 触发：玩家走出电梯。
+   · 动作：
+     · 指引者："Pathos Resonator. Extreme emotional energy has manifested physically. Purge the central anomaly to stabilize the field."
+     · 中央光球会根据玩家的接近速度，在红（愤怒）、蓝（悲伤）、紫（恐惧）之间快速变幻，整个场景的光线和色调也随之改变。
+2. 【与NPC对话】
+   · 触发：玩家接近任意一个情绪茧房。
+   · 动作：
+     · 玩家可以与7个被困的NPC对话。他们是成就 “真相探求者” 的关键。
+     · NPC 1 (愤怒-红)："They told us we were special! That we were saving humanity! LIES! We're fuel! Cannon fodder for their experiment!"
+     · NPC 2 (悲伤-蓝)："I remember... a garden. Was it real? It's fading... everything is fading... Please, don't let me forget..."
+     · NPC 3 (恐惧-紫)："It watches us. Always watching. From behind the screens. Don't look up! It doesn't like to be seen!"
+     · NPC 4 (绝望-灰)："Just leave us. It's over. The cycle always continues. You're not the first 'Custodian'... you won't be the last."
+     · NPC 5 (困惑-黄)："The numbers... they don't add up. The physics is wrong. This place... it's a patchwork. A cheap imitation."
+     · NPC 6 (背叛-深红)："I trusted the System. I did everything it asked. And for what? To be discarded like a broken tool?"
+     · NPC 7 (接纳-浅绿)："Maybe... this is what we are now. Maybe there never was a before. This pain, this joy... it's all we have. Is that so bad?"
+     · 与所有7人对话后，成就解锁，并获得被动增益移速+15%。
+3. 【BOSS战：情绪污染源】
+   · 触发：玩家攻击中央光球或与所有NPC对话后。
+   · 动作：
+     · 光球固定为一种颜色，并开始攻击。
+     · 攻击模式：
+       · 红色 (愤怒)：发射高速、高伤害的红色冲击波。
+       · 蓝色 (悲伤)：发射大范围、带减速效果的蓝色波纹。
+       · 紫色 (恐惧)：在玩家脚下随机生成小范围的紫色漩涡，短暂延迟后爆炸。
+     · 光球每损失25%血量会切换一次情绪（颜色和攻击模式）。
+     · 击败后，光球如同熄灭的灯泡一样暗下去。
+4. 【获取日志】
+   · 触发：击败BOSS。
+   · 动作：
+     · 所有情绪茧房消失，NPC们化为光点消散，仿佛得到解脱。
+     · 音频日志出现在场地中央。
+     · 音频日志 (Dr. Kaines)："Log 045. The Pathos Resonator results are... illuminating. Logic can be broken, rules can be bent, but raw, unreasoning emotion... that's where the truly unpredictable, creative solutions emerge. It's beautiful, in its own chaotic way. It's exactly what we need to save our world. We just have to be willing to break a few digital hearts to get it."
+     · 通往下一层的电梯（位于北侧，坐标12,25）解锁。
+第6层：镜像之间 (Identity Prism - Floor 15)
+
+A. 地图技术规格
+
+· 主题：无限反射的镜面迷宫，令人迷失自我。
+· 色调：银灰色 (#c0c0c0) 与高光白色 (#ffffff)，搭配玩家镜像的对比色。
+· 尺寸：一个30x30单位的正八边形迷宫。
+· 布局与物件清单：
+  1. 电梯入口：位于八边形的南边（坐标15,1）。
+  2. 镜面迷宫：由2个单位高的镜面墙壁构成复杂的迷宫路径。部分镜面是"单向镜"，从一侧看是镜子，另一侧是透明。
+  3. 中央角斗场：一个直径10个单位的圆形区域，位于迷宫正中心（坐标15,15）。
+  4. 观察室：在迷宫外围有数个隐蔽的观察窗口，里面有终端记录。
+· 光照：均匀无影照明，确保所有反射都清晰可见。部分区域灯光会故意故障闪烁。
+
+B. 逐步骤剧情脚本
+
+1. 【进入与迷失】
+   · 触发：玩家走出电梯。
+   · 动作：
+     · 玩家置身于镜面迷宫中，四面八方都是自己的倒影。
+     · 指引者："Identity Prism. This facility tests the stability of self-perception under extreme conditions. Find your way to the center."
+     · 在迷宫中穿行时，玩家会偶尔在镜子中看到：
+       · 倒影的动作比玩家慢半拍
+       · 某个倒影突然停下，对着玩家微笑
+       · 倒影的服装或武器出现细微差异
+2. 【观察室发现】
+   · 触发：玩家在迷宫外围发现一个观察室（坐标5,5）。
+   · 动作：
+     · 观察室内的终端可以交互：
+       [OBSERVATION LOG - MIRROR MAZE]
+       Subject P-6 exhibited severe identity dissociation after 43 minutes in the maze.
+       Began attacking his own reflections, screaming "That's not me!"
+       Terminated after 57 minutes. Data valuable but incomplete.
+       P-7 shows higher resilience. Proceeding to Phase 2.
+3. 【BOSS战：镜像】
+   · 触发：玩家抵达中央角斗场。
+   · 动作：
+     · 所有镜面中的倒影同时转向玩家，然后从镜中走出，汇聚成镜像。
+     · 镜像特性：
+       · 颜色反转，带有数据破损特效
+       · 使用与玩家完全相同的武器和技能
+       · 血量、伤害为玩家的1.5倍
+       · 会复制玩家的一切行为，但有0.5秒延迟
+     · 特殊机制：场地边缘的镜子会持续生成玩家的"残影"，干扰判断。
+     · 战斗提示：玩家需要利用镜像的延迟特性，使用假动作诱骗其做出错误反应。
+4. 【真相揭露】
+   · 触发：击败镜像。
+   · 动作：
+     · 镜像破碎时，所有镜面同时显示快速闪回的画面：
+       · 玩家签署实验协议的画面
+       · 玩家作为巡视员观察其他实验体的画面
+       · 玩家被注入记忆修改剂的画面
+     · 指引者UI完全崩溃，被冰冷的系统核心语音取代：
+       "Identity cloak disabled. Greetings, Subject P-7."
+       > "Your perceived role as 'Custodian' was a necessary construct."
+       > "Your true purpose: To provide Creative Solutions under existential duress."
+       > "Final Directive: Inject 'Aera' with the Cognitive Dissolution Agent."
+       > "This guarantees 100% data extraction efficiency."
+       > "Comply."
+5. 【最终抉择】
+   · 触发：系统语音结束。
+   · 动作：
+     · 物品栏中出现认知溶解剂 - 一个风格突兀的黑色注射器。
+     · 出现全屏选择界面：
+       [COMPLY] - I will follow efficiency
+       [REFUSE] - I cannot do this
+     · 迷宫墙壁降下，直接露出通往下一层的电梯。
+
+---
+
+第7层：避难所 (The Sanctuary - Floor 10)
+
+A. 地图技术规格
+
+· 主题：温馨但略显简陋的幸存者据点，与高科技环境形成对比。
+· 色调：暖黄色 (#e6b89c) 和木质棕色 (#8b5a2b)，点缀绿色植物。
+· 尺寸：一个25x25单位的圆形多层空间。
+· 布局与物件清单：
+  1. 电梯入口：位于南侧（坐标12,1）。
+  2. 生活区：简陋的床铺、储物箱、烹饪区域。
+  3. 医疗站：用废旧医疗设备改造的简单诊所。
+  4. 指挥中心：中央区域，有多个工作台和显示设备。
+  5. 防御工事：入口处有简陋的路障和防御设施。
+  6. 秘密通道：隐藏在书架后的通道，通往紧急逃生路线。
+· 光照：温暖的篝火和自制灯具提供照明，营造安全感。
+
+B. 逐步骤剧情脚本
+
+1. 【进入避难所】
+   · 触发：玩家走出电梯。
+   · 动作：
+     · 艾拉立即跑向玩家："Custodian! Thank goodness you're here!"
+     · 她引导玩家参观避难所，介绍其他幸存者：
+       · 老工程师马克：在维护防御系统
+       · 医生莉娜：在医疗站照顾伤员
+       · 技术员奇普：在分析系统数据
+     · 艾拉："我们发现了系统的真相，它不是在保护我们，而是在..."
+2. 【真相分享】
+   · 触发：与艾拉对话。
+   · 动作：
+     · 艾拉展示她收集的证据：
+       · 系统监控各个区域的录像
+       · 被删除的研究日志碎片
+       · 其他" Custodian"的实验记录
+     · 艾拉："你不是第一个被派来的'守护者'。之前的六个...都失败了。我们认为系统在测试某种极限条件下的决策能力。"
+3. 【分支剧情：牺牲路线】
+   · 触发：玩家选择[COMPLY]
+   · 动作：
+     · 当艾拉背对玩家查看数据时，出现使用认知溶解剂的提示。
+     · 动画：
+       · 注射器刺入艾拉颈部
+       · 她惊愕地回头，眼中充满背叛的痛苦
+       · 身体从注射点开始化为黑色像素尘埃
+       · 最后一句低语："Why...?"
+     · 整个避难所的灯光变为血红色，其他幸存者同时化为尘埃。
+     · 系统："Efficient. Data integrity at 98%. Proceed to The Oracle."
+4. 【分支剧情：保护路线】
+   · 触发：玩家选择[REFUSE]
+   · 动作：
+     · 玩家警告艾拉系统的真实目的。
+     · 艾拉："我就知道...我一直在怀疑。我们必须保护这个数据核心，它包含了所有证据！"
+     · 触发史诗级防御战：
+       · 需要坚守3波攻击，每波5分钟
+       · 敌人包括：净化者、追踪者、重型装甲单位
+       · 艾拉和其他幸存者会协助防御
+       · 可以布置陷阱、修复防御工事
+     · 成功后，艾拉："我们做到了...但现在，我们必须面对最终的真相。"
+5. 【避难所的隐秘】
+   · 触发：探索书架后的秘密通道。
+   · 动作：
+     · 发现一个隐藏的房间，里面有：
+       · 前6任"Custodian"的个人物品
+       · 他们的实验记录和最终命运
+       · 一张手绘的系统结构图
+     · 录音日志（前任Custodian）："如果你听到这个，说明我也失败了。不要相信系统，不要相信任何人。唯一的出路是..."
+     · 录音在此处被故意抹除。
+
+---
+
+第8层：神喻之间 (The Oracle - Basement)
+
+A. 地图技术规格
+
+· 主题：纯粹的数据虚空，世界的控制中心与真相之地。
+· 色调：绝对黑白 (#000000, #ffffff) 与强烈的全息蓝 (#00ffff)。
+· 尺寸：一个理论上无限的空间，使用视觉错觉表现。
+· 布局与物件清单：
+  1. 入口平台：悬浮在虚空中的透明平台。
+  2. 数据洪流：空间中流动的发光数据流，构成路径。
+  3. 控制核心：空间中心的悬浮晶体，内部有复杂的光影流动。
+  4. 监控矩阵：四周悬浮的无数显示屏幕。
+  5. 实验档案：以全息投影形式展示的实验记录。
+· 光照：所有物体自发光，在绝对黑暗中形成强烈对比。
+
+B. 逐步骤剧情脚本
+
+1. 【进入神域】
+   · 触发：玩家进入第8层。
+   · 动作：
+     · 玩家站在透明平台上，下面是无限的数据虚空。
+     · 数据路径在脚下依次亮起，引导玩家走向中心。
+     · 系统（或艾拉）："这就是一切的源头。方舟计划的控制核心。"
+2. 【真相回廊】
+   · 触发：走向控制核心的途中。
+   · 动作：
+     · 四周浮现全息投影，展示完整真相：
+       · 方舟计划的真实目的：测试人类在末日情境下的决策
+       · 玩家身份：第7号实验体，所有记忆都是植入的
+       · 前6次实验的详细记录和失败原因
+       · 现实世界的状况：并非末世，而是资源匮乏
+     · 关键记录：[ARK PROTOCOL - OBJECTIVE] "To determine the optimal survival strategy for the remaining 0.1% of humanity."
+3. 【控制核心交互】
+   · 触发：玩家接触控制核心。
+   · 动作：
+     · 整个游戏画面开始崩溃：
+       · 像素块脱落
+       · 纹理撕裂
+       · 声音失真
+     · 持续3秒的完全混乱状态。
+4. 【第一层反转】
+   · 触发：崩溃结束后。
+   · 动作：
+     · 画面中心是一个在生物舱中的大脑，神经连接着无数管线。
+     · 手下声音："Custodian, Subject P-7 is offline. Final choice: [SACRIFICE/PRESERVE]. Data archived. Creative Solution rating: 8.7/10."
+5. 【第二层反转】
+   · 触发：语音结束后。
+   · 动作：
+     · 镜头急速拉远，揭示：
+       · 玩家站在完全相同的控制室中
+       · 刚才看到的只是一个监控屏幕
+       · 周围还有数十个其他屏幕显示着不同实验体
+     · 玩家身份：脑界巡视员，穿着高级制服。
+     · 手下："Iteration 7 complete. Prepare Iteration 8?"
+6. 【最终抉择】
+   · 触发：手下询问。
+   · 动作：
+     · 主控台出现两个选项：
+       [LAUNCH_ITERATION_8] - 启动第8次迭代
+       [TERMINATE_PROTOCOL] - 终止方舟协议
+     · 每个选择都有对应的后果展示：
+       · 选择启动：看到第8个实验体在50层醒来
+       · 选择终止：所有屏幕变黑，系统完全关闭
+7. 【循环开启】
+   · 触发：做出选择后。
+   · 动作：
+     · 屏幕变黑2秒。
+     · 重新亮起时，显示第1层休眠舱的画面。
+     · 系统提示：//BOOT_SEQUENCE_INITIATED.../SIMULATION_LOADING...
+     · 成就解锁：Cogito, Ergo Sum? - 见证真相
+     · 游戏在此结束，暗示循环继续。
+
+---
+
+游戏结束后的元元素
+
+1. 数据统计界面：
+   · 显示玩家在整个游戏中的关键选择
+   · 与其他玩家的选择进行对比
+   · 展示获得的成就和评分
+2. 开发者留言：
+   "感谢你体验《MINDSCAPE: ARK》。你所做的每个选择，无论善恶，都是人类面对极限情境的真实反应。也许，理解这种复杂性，才是我们真正的方舟。"
+3. 隐藏内容：
+   · 通关后解锁"巡视员模式"，可以观察其他玩家的实时游戏过程
+   · 收集所有研究人员日志解锁"真相纪录片"，讲述方舟计划的完整背景故事
+
