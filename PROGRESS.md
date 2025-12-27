@@ -28,3 +28,4 @@
 - Left mouse now fires (same as space) toward mouse direction; fire direction already follows cursor.
 - Font resolution now auto-loads bundled fonts from `assets/fonts` (prefers NotoSansSC) before system fallbacks; start menu uses resolved font.
 - Derived a four-frame walk cycle from the base player sprite (`assets/images/player_walk_cycle.png`) with subtle leg shifts and ponytail sway for in-game movement animation.
+- Integrated the walk-cycle sprites into player movement; animation flips between frames while manual or auto-path movement occurs.

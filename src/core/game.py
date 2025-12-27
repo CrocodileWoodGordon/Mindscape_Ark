@@ -28,7 +28,12 @@ class Game:
         self.map_surface: pygame.Surface | None = None
         self.map_offset = (0, 0)
         self.player_rect = pygame.Rect(0, 0, *settings.PLAYER_SIZE)  # map-space rect
-        self.player_sprite: pygame.Surface | None = self._load_player_sprite()
+        self._player_idle_sprite = self._load_player_sprite()
+        self._player_walk_frames = self._load_player_walk_frames()
+        self.player_sprite: pygame.Surface | None = self._default_player_sprite()
+        self._player_anim_index = 0
+        self._player_anim_timer = 0.0
+        self._player_was_moving = False
         self.path: list[tuple[int, int]] = []  # list of map-cell nodes
         self.path_target: tuple[int, int] | None = None
         self.path_goal_cell: tuple[int, int] | None = None
@@ -117,6 +122,10 @@ class Game:
         self.font_path = self._resolve_font()
         self.font_prompt = self._load_font(18)
         self.font_dialog = self._load_font(20)
+        self.player_sprite = self._default_player_sprite()
+        self._player_anim_index = 0
+        self._player_anim_timer = 0.0
+        self._player_was_moving = False
         mask_path = settings.INTERACT_MASKS.get(self.current_floor)
         if mask_path and mask_path.exists():
             mask = pygame.image.load(str(mask_path)).convert_alpha()
@@ -248,14 +257,17 @@ class Game:
         pygame.event.pump()
         keys = pygame.key.get_pressed()
         manual_dx, manual_dy = self._manual_axis(keys, dt)
+        moved = False
 
         if manual_dx or manual_dy:
             self.path = []
             self.path_target = None
             self.path_goal_cell = None
-            self._move_player(manual_dx, manual_dy)
+            moved = self._move_player(manual_dx, manual_dy)
         elif self.path:
-            self._follow_path(dt)
+            moved = self._follow_path(dt)
+
+        self._update_player_animation(moved, dt)
 
         self._update_bullets(dt)
 
@@ -321,6 +333,60 @@ class Game:
             w, h = sprite.get_size()
             return pygame.transform.scale(sprite, (int(w * settings.PLAYER_SCALE), int(h * settings.PLAYER_SCALE)))
         return None
+
+    def _load_player_walk_frames(self) -> list[pygame.Surface]:
+        frames: list[pygame.Surface] = []
+        path = settings.PLAYER_WALK_SHEET
+        if not path.exists():
+            return frames
+        try:
+            sheet = pygame.image.load(str(path)).convert_alpha()
+        except Exception:
+            return frames
+        frame_count = max(1, settings.PLAYER_WALK_FRAMES)
+        frame_width = sheet.get_width() // frame_count
+        frame_height = sheet.get_height()
+        if frame_width <= 0 or frame_height <= 0:
+            return frames
+        for idx in range(frame_count):
+            rect = pygame.Rect(idx * frame_width, 0, frame_width, frame_height)
+            frame = sheet.subsurface(rect).copy()
+            if settings.PLAYER_SCALE != 1:
+                scaled_w = int(frame_width * settings.PLAYER_SCALE)
+                scaled_h = int(frame_height * settings.PLAYER_SCALE)
+                frame = pygame.transform.scale(frame, (scaled_w, scaled_h))
+            frames.append(frame)
+        return frames
+
+    def _default_player_sprite(self) -> pygame.Surface | None:
+        if getattr(self, "_player_idle_sprite", None):
+            return self._player_idle_sprite
+        if getattr(self, "_player_walk_frames", []):
+            return self._player_walk_frames[0]
+        return None
+
+    def _update_player_animation(self, moving: bool, dt: float) -> None:
+        if not moving:
+            self._player_anim_timer = 0.0
+            self._player_anim_index = 0
+            self.player_sprite = self._default_player_sprite()
+            self._player_was_moving = False
+            return
+        if not self._player_walk_frames:
+            self.player_sprite = self._default_player_sprite()
+            self._player_was_moving = False
+            return
+        fps = max(1, settings.PLAYER_WALK_FPS)
+        frame_time = 1.0 / fps
+        if not self._player_was_moving:
+            self._player_anim_timer = frame_time
+            self._player_anim_index = 0
+        self._player_anim_timer += dt
+        while self._player_anim_timer >= frame_time:
+            self._player_anim_timer -= frame_time
+            self._player_anim_index = (self._player_anim_index + 1) % len(self._player_walk_frames)
+        self.player_sprite = self._player_walk_frames[self._player_anim_index]
+        self._player_was_moving = True
 
     def _resolve_font(self) -> Path | None:
         candidates = []
@@ -397,9 +463,10 @@ class Game:
         self.path_target = (map_x, map_y) if self.path else None
         self.path_goal_cell = goal if self.path else None
 
-    def _move_player(self, dx: int, dy: int) -> None:
+    def _move_player(self, dx: int, dy: int) -> bool:
         if not self.map_data:
-            return
+            return False
+        before = self.player_rect.center
         # offset collider downward to align with legs
         collider = self.player_rect.copy()
         collider.move_ip(0, settings.PLAYER_COLLIDER_OFFSET_Y * settings.MAP_SCALE)
@@ -413,6 +480,7 @@ class Game:
         # move visual rect to keep relative offset
         moved.move_ip(0, -settings.PLAYER_COLLIDER_OFFSET_Y * settings.MAP_SCALE)
         self.player_rect = moved
+        return self.player_rect.center != before
 
     def _manual_axis(self, keys: pygame.key.ScancodeWrapper, dt: float) -> tuple[int, int]:
         # WASD/arrow with cancellation rules; speed matches auto-path (PLAYER_SPEED)
@@ -596,9 +664,9 @@ class Game:
             sy = int(b["y"] + oy)
             pygame.draw.circle(self.screen, color, (sx, sy), r)
 
-    def _follow_path(self, dt: float) -> None:
+    def _follow_path(self, dt: float) -> bool:
         if not self.map_data or not self.path:
-            return
+            return False
         cell_px = self.map_data.cell_size * settings.MAP_SCALE
         next_node = self.path[0]
         target_pos = (next_node[0] * cell_px + cell_px // 2, next_node[1] * cell_px + cell_px // 2)
@@ -609,7 +677,7 @@ class Game:
         dx = int(round(vx / dist * speed))
         dy = int(round(vy / dist * speed))
         before = self.player_rect.center
-        self._move_player(dx, dy)
+        moved_step = self._move_player(dx, dy)
         after = self.player_rect.center
         # If we failed to get closer (collision), try skipping the node or replanning to goal
         prev_dist = abs(before[0] - target_pos[0]) + abs(before[1] - target_pos[1])
@@ -619,7 +687,7 @@ class Game:
             self.path.pop(0)
             if not self.path:
                 self._replan_to_goal()
-                return
+                return moved_step
             next_node = self.path[0]
             target_pos = (next_node[0] * cell_px + cell_px // 2, next_node[1] * cell_px + cell_px // 2)
 
@@ -628,6 +696,7 @@ class Game:
             if not self.path:
                 self.path_target = None
                 self.path_goal_cell = None
+        return moved_step
 
     def _replan_to_goal(self) -> None:
         if not self.map_data or not self.path_goal_cell:
