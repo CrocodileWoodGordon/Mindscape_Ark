@@ -74,3 +74,7 @@ class StartMenu:
     @property
     def start_requested(self) -> bool:
         return self._start_requested
+
+    def reset(self) -> None:
+        """Return menu to idle state so it can be shown again."""
+        self._start_requested = False

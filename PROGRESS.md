@@ -1,31 +1,22 @@
 # Progress Log
 
-- Recreated project scaffold after cleanup (src/core, systems, maps, assets, data, tests).
-- Start menu with layered title/button; game starts into Floor50.
-- Map loader + collision + play loop with 2px movement; trigger-based floor swap (F50 -> F40; F2 hotkey test).
-- Floor visuals copied to `assets/images/Floor50.png` and `Floor40.png`; collision JSONs (2px cells) at `assets/maps/floor50.json` and `floor40.json`.
-- Added map scaling (MAP_SCALE=3) and camera centered on player; minimap showing walkable cells and player marker.
-- Added right-click A* auto-pathing (grid-based) with path-follow movement; manual arrow keys cancel path.
-- Added player sprite loader (`assets/images/player.png` with PLAYER_SCALE=3) with rectangle fallback.
-- Floor40 collision corrected (elevator zone marked walkable).
-- Pathfinding upgraded to 8-direction A* with octile heuristic, corner-cut prevention, and clearance checks using player size; auto-path now replans/advances when blocked instead of stalling.
-- Floor50 collision grid rebuilt from `assets/images/Floor50_mask.png` (white walkable, green blocked) at 2px resolution; ensured spawn cell stays walkable.
-- Interaction system added: proximity prompts (按F查看/乘坐) and dialog overlay; terminals/frames show text, exits require F instead of auto-trigger.
-- Debug overlay: bottom-right live player coordinates for testing.
-- Interaction prompt radius increased to 50 map px for easier activation.
-- Pathfinding click fallback: clicking an unreachable cell now auto-reroutes to the nearest reachable cell respecting clearance, instead of failing.
-- Fallback search is limited to 10px; if no reachable cell is within that range, the click is ignored.
-- Path-following: reduced false "stuck" skips—only skip when no movement occurred; clears goal when path finishes to prevent early stop.
-- Added right-click visual feedback: shrinking circle at click position.
-- Click feedback shrinks faster (duration 0.2s).
-- Added WASD/arrow manual move at same speed as auto-path, with diagonal combos; opposite keys lock movement until both released; manual input cancels auto-path and has priority.
-- Collision box shifted downward (offset to feet) so collisions are checked near the legs.
-- Intro boot/reveal sequence added; flows into guided cutscene with typewriter dialog.
-- Guidance dialog expanded to include tutorials: move (WASD/Arrows), fire (LMB/Space toward cursor), interact (F), reload (R), right-click auto-path, and English input method reminder.
-- Quest/task system with stages (intro, explore, elevator) and HUD under minimap; elevator remains locked until the log is read, then updates to “乘坐电梯前往F40”.
-- Elevator interaction now shows locked dialog when gated; unlocks after log interaction; quest stage setter toggles elevator lock.
-- Dialog overlay improved: space closes active dialogs (prevents firing while dialog is visible); camera stays stable during cutscenes before rendering.
-- Left mouse now fires (same as space) toward mouse direction; fire direction already follows cursor.
-- Font resolution now auto-loads bundled fonts from `assets/fonts` (prefers NotoSansSC) before system fallbacks; start menu uses resolved font.
-- Derived a four-frame walk cycle from the base player sprite (`assets/images/player_walk_cycle.png`) with subtle leg shifts and ponytail sway for in-game movement animation.
-- Integrated the walk-cycle sprites into player movement; animation flips between frames while manual or auto-path movement occurs.
+## Completed
+- Recreated a clean project scaffold with `src/core`, `systems`, `maps`, `assets`, and a smoke test harness.
+- Implemented the start menu with layered title rendering, bundled font resolution, and bilingual presentation.
+- Added the glitch boot, mosaic reveal, and guided cutscene that tutorials movement, combat, auto-pathing, interaction, reload, and input-method reminders.
+- Built the Dormitory (Floor 50) loop: regenerated collision from `Floor50_mask.png`, staged quests, frame-triggered combat, terminal log gating, and elevator unlock toward Floor 40.
+- Finished player navigation: WASD movement with conflict locks, right-click A* pathfinding with nearest-cell fallback, click feedback, and centered minimap tracking.
+- Delivered the combat system: bullet spawning, cooldown/reload, HP HUD, enemy spawn heuristics, chase AI, aggro boundaries, melee attacks, telegraphed FX, death fades, and enemy health bars.
+- Added the interaction layer: F prompts, dialog overlay with timer, terminal/frame messaging, NPC state handling, and elevator locks bound to quest stages.
+- Developed the Sensory Lab (Floor 40): abstract collision rendering, trap cycles, energy barriers, fight/bypass branching logic, NPC state machine, branch-tailored enemy spawns, quest progression, and switch-controlled elevator unlock.
+- Polished UI/feedback: quest HUD, minimap, health/ammo/reload display, player hit flash, and debug coordinate readout.
+- Hardened the resource pipeline: NotoSansSC font preference, optional `boot_glitch.wav`, walk-cycle animation, and map loader improvements.
+
+## In Progress
+- Floor 40 exit currently targets a placeholder Floor 35; the map, encounters, and narrative beats are not yet implemented.
+- Save system hooks are reserved via `data/saves` but persistence is not wired up.
+
+## Next Up
+- Author the Floor 35 map JSON, narrative flow, and elevator linkage.
+- Extend the combat sandbox with additional weapons, achievements, and enemy archetypes.
+- Broaden audio/visual polish and run performance profiling before scaling to deeper floors.

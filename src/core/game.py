@@ -3,6 +3,8 @@
 import sys
 from pathlib import Path
 import random
+import math
+from collections import deque
 
 import pygame
 
@@ -27,6 +29,8 @@ class Game:
         self.map_data: MapData | None = None
         self.map_surface: pygame.Surface | None = None
         self.map_offset = (0, 0)
+        self._base_collision_grid: list[list[int]] = []
+        self.lab_surface: pygame.Surface | None = None
         self.player_rect = pygame.Rect(0, 0, *settings.PLAYER_SIZE)  # map-space rect
         self._player_idle_sprite = self._load_player_sprite()
         self._player_walk_frames = self._load_player_walk_frames()
@@ -66,6 +70,21 @@ class Game:
         self.cutscene_char_progress = 0.0
         self.cutscene_done_line = False
         self.cutscene_started = False
+        self.enemy_attack_fx: list[dict] = []
+        self.player_hit_timer = 0.0
+        self.player_health_max = settings.PLAYER_MAX_HEALTH
+        self.player_health = float(self.player_health_max)
+        self.player_dead = False
+        self.regen_cooldown = 0.0
+        self.regen_active = False
+        self.any_enemy_aggro = False
+        self.dynamic_blockers: list[pygame.Rect] = []
+        self.floor_flags: dict[str, bool] = {}
+        self.floor_timers: dict[str, float] = {}
+        self.lab_traps: list[dict] = []
+        self.lab_barriers: list[dict] = []
+        self.lab_npc_state: dict[str, dict] = {}
+        self.lab_branch = ""
         self.quest_stage = "intro"  # Ensure quest stage reset in _load_floor
         self.elevator_locked = True
 
@@ -78,6 +97,7 @@ class Game:
 
     def _load_floor(self, path: Path) -> None:
         self.map_data = load_map(path)
+        self._base_collision_grid = [row[:] for row in self.map_data.collision_grid]
         self.map_surface = self._build_map_surface(self.map_data)
         map_w, map_h = self.map_surface.get_size()
         self.map_offset = (
@@ -117,8 +137,24 @@ class Game:
         self.cutscene_char_progress = 0.0
         self.cutscene_done_line = False
         self.cutscene_started = False
+        self.enemy_attack_fx = []
+        self.player_hit_timer = 0.0
+        self.player_health_max = settings.PLAYER_MAX_HEALTH
+        self.player_health = float(self.player_health_max)
+        self.player_dead = False
+        self.regen_cooldown = 0.0
+        self.regen_active = False
+        self.any_enemy_aggro = False
+        self.dynamic_blockers = []
+        self.floor_flags = {}
+        self.floor_timers = {}
+        self.lab_traps = []
+        self.lab_barriers = []
+        self.lab_npc_state = {}
+        self.lab_branch = ""
+        self.lab_surface = None
         self.quest_stage = "intro"
-        self.elevator_locked = self.current_floor == "F50"
+        self.elevator_locked = True
         self.font_path = self._resolve_font()
         self.font_prompt = self._load_font(18)
         self.font_dialog = self._load_font(20)
@@ -139,6 +175,8 @@ class Game:
                 self.boot_sound = pygame.mixer.Sound(str(settings.SOUND_BOOT))
             except Exception:
                 self.boot_sound = None
+
+        self._on_floor_loaded()
 
     def _build_map_surface(self, data: MapData) -> pygame.Surface:
         # If an image exists, load and return it; otherwise draw collision blocks
@@ -192,6 +230,18 @@ class Game:
         if event.type == pygame.KEYDOWN:
             if event.key == pygame.K_ESCAPE:
                 self.running = False
+                return
+            if self.player_dead:
+                if event.key == pygame.K_RETURN:
+                    self._restart_to_menu()
+                elif event.key == pygame.K_F2:
+                    self.current_floor = "F40"
+                    self._load_floor(settings.MAP_FILES[self.current_floor])
+                return
+            if self.dialog_lines:
+                if event.key in (pygame.K_SPACE, pygame.K_RETURN):
+                    self._dismiss_dialog()
+                return
             if event.key == pygame.K_F2:
                 # Quick swap to Floor40 for testing
                 self.current_floor = "F40"
@@ -202,10 +252,7 @@ class Game:
                 self._start_reload()
             if event.key == pygame.K_SPACE:
                 if self.dialog_lines:
-                    # Close current dialog instead of firing
-                    self.dialog_lines = []
-                    self.dialog_timer = 0.0
-                    self.dialog_title = ""
+                    self._dismiss_dialog()
                     return
                 self._try_fire()
             self._keys_down.add(event.key)
@@ -234,6 +281,8 @@ class Game:
             for k in self._held_dirs:
                 self._held_dirs[k] = False
         if event.type == pygame.MOUSEBUTTONDOWN:
+            if self.player_dead or self.dialog_lines:
+                return
             if event.button == 1:
                 self._try_fire()
             if event.button == 3:
@@ -253,6 +302,19 @@ class Game:
     def _update_play(self, dt: float) -> None:  # noqa: ARG002
         if not self.map_data:
             return
+        if self.dialog_lines:
+            self.interaction_target = None
+            self._update_camera()
+            return
+        if self.player_dead:
+            self._update_bullets(dt)
+            self._update_enemies(dt)
+            self._update_enemy_attack_fx(dt)
+            if self.player_hit_timer > 0.0:
+                self.player_hit_timer = max(0.0, self.player_hit_timer - dt)
+            self.interaction_target = None
+            self._update_camera()
+            return
         # Ensure key state is refreshed even if no new events arrived this frame
         pygame.event.pump()
         keys = pygame.key.get_pressed()
@@ -270,11 +332,42 @@ class Game:
         self._update_player_animation(moved, dt)
 
         self._update_bullets(dt)
+        self._update_enemies(dt)
+        self._update_enemy_attack_fx(dt)
+        if self.player_hit_timer > 0.0:
+            self.player_hit_timer = max(0.0, self.player_hit_timer - dt)
 
+        self._update_floor_logic(dt)
+        self._update_player_regen(dt)
         self._update_interaction_prompt()
 
         self._update_camera()
         self._check_triggers()
+
+    def _update_player_regen(self, dt: float) -> None:
+        if self.player_dead:
+            self.regen_active = False
+            return
+        if self.player_health >= self.player_health_max:
+            self.player_health = float(self.player_health_max)
+            self.regen_active = False
+            self.regen_cooldown = 0.0
+            return
+        if self.any_enemy_aggro:
+            self._reset_regen_cooldown()
+            return
+        if self.regen_cooldown > 0.0:
+            self.regen_cooldown = max(0.0, self.regen_cooldown - dt)
+            if self.regen_cooldown == 0.0:
+                self.regen_active = True
+        if self.regen_active:
+            heal = settings.PLAYER_REGEN_RATE * dt
+            if heal > 0.0:
+                self.player_health = min(self.player_health_max, self.player_health + heal)
+            if self.player_health >= self.player_health_max:
+                self.player_health = float(self.player_health_max)
+                self.regen_active = False
+                self.regen_cooldown = 0.0
 
     def _check_triggers(self) -> None:
         if not self.map_data:
@@ -284,6 +377,480 @@ class Game:
         for trig in self.map_data.triggers:
             # exit interactions now handled via prompt + F key
             continue
+
+    def _on_floor_loaded(self) -> None:
+        self.dynamic_blockers = []
+        self.floor_flags = {}
+        self.floor_timers = {}
+        self.lab_traps = []
+        self.lab_barriers = []
+        self.lab_npc_state = {}
+        self.lab_branch = ""
+        self.lab_surface = None
+        if not self.map_data:
+            return
+        if self._base_collision_grid:
+            for y, row in enumerate(self._base_collision_grid):
+                if y < len(self.map_data.collision_grid):
+                    self.map_data.collision_grid[y] = row[:]  # restore base grid snapshot
+        if self.current_floor == "F40":
+            self._enter_floor_f40()
+        else:
+            self._enter_floor_default()
+
+    def _enter_floor_default(self) -> None:
+        if self.current_floor == "F50":
+            self._set_quest_stage("intro")
+
+    def _enter_floor_f40(self) -> None:
+        self._set_quest_stage("lab_intro")
+        self.floor_flags.update({
+            "lab_intro_line": False,
+            "lab_trap1_triggered": False,
+            "lab_trap1_resolved": False,
+            "lab_branch_resolved": False,
+            "lab_switch_activated": False,
+            "lab_bypass_spawns": False,
+        })
+        self.floor_timers["lab_intro_delay"] = 0.5
+        self.lab_traps = []
+        self.lab_barriers = []
+        self.lab_branch = ""
+        self.lab_npc_state = {}
+        self._lab_init_traps()
+        self._lab_refresh_surface()
+
+    def _lab_unit_scale(self) -> int:
+        if not self.map_data:
+            return 1
+        width = max(1, self.map_data.grid_size[0])
+        return max(1, width // 40)
+
+    def _lab_cells_from_units(self, ux: float, uy: float, uw: float, uh: float) -> list[tuple[int, int]]:
+        if not self.map_data:
+            return []
+        scale = self._lab_unit_scale()
+        grid = self.map_data.collision_grid
+        x1 = int(ux * scale)
+        x2 = int((ux + uw) * scale)
+        y1 = int(uy * scale)
+        y2 = int((uy + uh) * scale)
+        cells: list[tuple[int, int]] = []
+        for cy in range(y1, y2):
+            if cy < 0 or cy >= len(grid):
+                continue
+            row = grid[cy]
+            for cx in range(x1, x2):
+                if 0 <= cx < len(row):
+                    cells.append((cy, cx))
+        return cells
+
+    def _lab_rect_from_cells(self, cells: list[tuple[int, int]]) -> pygame.Rect:
+        if not cells or not self.map_data:
+            return pygame.Rect(0, 0, 0, 0)
+        min_y = min(cy for cy, _ in cells)
+        max_y = max(cy for cy, _ in cells)
+        min_x = min(cx for _, cx in cells)
+        max_x = max(cx for _, cx in cells)
+        cell_px = self.map_data.cell_size
+        return pygame.Rect(
+            min_x * cell_px,
+            min_y * cell_px,
+            (max_x - min_x + 1) * cell_px,
+            (max_y - min_y + 1) * cell_px,
+        )
+
+    def _lab_units_to_display_pos(self, ux: float, uy: float) -> tuple[float, float]:
+        if not self.map_data:
+            return (0.0, 0.0)
+        scale_units = self._lab_unit_scale() * self.map_data.cell_size
+        base_x = (ux * scale_units) + (scale_units * 0.5)
+        base_y = (uy * scale_units) + (scale_units * 0.5)
+        s = settings.MAP_SCALE
+        return (base_x * s, base_y * s)
+
+    def _lab_init_traps(self) -> None:
+        if not self.map_data:
+            return
+        self.lab_traps = []
+        trap1_cells = self._lab_cells_from_units(5, 1, 3, 2)
+        trap2_cells = self._lab_cells_from_units(1, 5, 2, 3)
+        trap3_cells = self._lab_cells_from_units(5, 10, 3, 2)
+        self.lab_traps.append({
+            "id": "trap1",
+            "cells": trap1_cells,
+            "rect": self._lab_rect_from_cells(trap1_cells),
+            "state": "idle",
+            "timer": 0.0,
+            "void_duration": 2.0,
+            "cycle_interval": 0.0,
+            "active": True,
+            "permanent": True,
+            "sealed_announced": False,
+        })
+        self.lab_traps.append({
+            "id": "trap2",
+            "cells": trap2_cells,
+            "rect": self._lab_rect_from_cells(trap2_cells),
+            "state": "idle",
+            "timer": 3.0,
+            "void_duration": 1.4,
+            "cycle_interval": 3.6,
+            "active": False,
+            "permanent": False,
+            "sealed_announced": False,
+        })
+        self.lab_traps.append({
+            "id": "trap3",
+            "cells": trap3_cells,
+            "rect": self._lab_rect_from_cells(trap3_cells),
+            "state": "idle",
+            "timer": 2.4,
+            "void_duration": 1.6,
+            "cycle_interval": 4.2,
+            "active": False,
+            "permanent": False,
+            "sealed_announced": False,
+        })
+        for trap in self.lab_traps:
+            self._lab_set_cells(trap["cells"], False)
+        self.lab_barriers = []
+
+    def _lab_refresh_surface(self) -> None:
+        if not self.map_data:
+            self.lab_surface = None
+            return
+        cell_px = self.map_data.cell_size * settings.MAP_SCALE
+        width = self.map_data.grid_size[0] * cell_px
+        height = self.map_data.grid_size[1] * cell_px
+        surf = pygame.Surface((width, height))
+        surf.fill(settings.LAB_WALL_COLOR)
+        colors = list(getattr(settings, "LAB_BLOCK_COLORS", []))
+        if not colors:
+            colors = [(70, 110, 160)]
+        block_span = max(1, getattr(settings, "LAB_BLOCK_SPAN", 12))
+        for y, row in enumerate(self.map_data.collision_grid):
+            for x, val in enumerate(row):
+                if val not in settings.PASSABLE_VALUES:
+                    continue
+                block_index = ((x // block_span) + (y // block_span)) % len(colors)
+                color = colors[block_index]
+                rect = pygame.Rect(x * cell_px, y * cell_px, cell_px, cell_px)
+                surf.fill(color, rect)
+        interact_colors = getattr(settings, "LAB_INTERACT_COLORS", {})
+        for trig in settings.INTERACT_ZONES.get("F40", []):
+            color = interact_colors.get(trig.get("type", ""))
+            if not color:
+                continue
+            x1, y1, x2, y2 = trig["rect"]
+            scaled_rect = pygame.Rect(
+                int(x1 * settings.MAP_SCALE),
+                int(y1 * settings.MAP_SCALE),
+                max(1, int((x2 - x1) * settings.MAP_SCALE)),
+                max(1, int((y2 - y1) * settings.MAP_SCALE)),
+            )
+            surf.fill(color, scaled_rect)
+        self.lab_surface = surf.convert()
+        self.map_surface = self.lab_surface
+        map_w, map_h = self.map_surface.get_size()
+        self.map_offset = (
+            (settings.WINDOW_WIDTH - map_w) // 2,
+            (settings.WINDOW_HEIGHT - map_h) // 2,
+        )
+
+    def _lab_set_cells(self, cells: list[tuple[int, int]], solid: bool) -> None:
+        if not self.map_data:
+            return
+        grid = self.map_data.collision_grid
+        base = self._base_collision_grid
+        for cy, cx in cells:
+            if cy < 0 or cy >= len(grid):
+                continue
+            row = grid[cy]
+            if cx < 0 or cx >= len(row):
+                continue
+            if solid:
+                row[cx] = 1
+            else:
+                if base and cy < len(base) and cx < len(base[cy]):
+                    row[cx] = base[cy][cx]
+                else:
+                    row[cx] = 0
+
+    def _lab_trigger_trap(self, trap_id: str) -> None:
+        for trap in self.lab_traps:
+            if trap.get("id") == trap_id:
+                if trap.get("state") == "void":
+                    return
+                trap["state"] = "void"
+                trap["timer"] = trap.get("void_duration", 1.0)
+                self._lab_set_cells(trap["cells"], True)
+                break
+
+    def _lab_update_traps(self, dt: float) -> None:
+        for trap in self.lab_traps:
+            if not trap.get("active"):
+                continue
+            state = trap.get("state")
+            if state == "void":
+                trap["timer"] = max(0.0, trap.get("timer", 0.0) - dt)
+                if trap["timer"] <= 0.0:
+                    if trap.get("permanent"):
+                        trap["state"] = "sealed"
+                        self._lab_set_cells(trap["cells"], True)
+                        if not trap.get("sealed_announced"):
+                            trap["sealed_announced"] = True
+                            self.floor_flags["lab_trap1_resolved"] = True
+                            self._show_dialog(["指引者：主干道塌陷，改道进入外圈。"], title="指引者")
+                    else:
+                        trap["state"] = "idle"
+                        self._lab_set_cells(trap["cells"], False)
+                        trap["timer"] = trap.get("cycle_interval", 0.0)
+            elif trap.get("cycle_interval", 0.0) > 0.0:
+                trap["timer"] = max(0.0, trap.get("timer", 0.0) - dt)
+                if trap["timer"] <= 0.0:
+                    trap["state"] = "void"
+                    trap["timer"] = trap.get("void_duration", 1.0)
+                    self._lab_set_cells(trap["cells"], True)
+
+    def _draw_lab_traps(self) -> None:
+        if not self.lab_traps:
+            return
+        scale = settings.MAP_SCALE
+        for trap in self.lab_traps:
+            state = trap.get("state")
+            if state in {"idle"} or not trap.get("rect"):
+                continue
+            rect = trap["rect"]
+            draw_rect = pygame.Rect(
+                int(rect.x * scale + self.map_offset[0]),
+                int(rect.y * scale + self.map_offset[1]),
+                int(rect.width * scale),
+                int(rect.height * scale),
+            )
+            if draw_rect.width <= 0 or draw_rect.height <= 0:
+                continue
+            surf = pygame.Surface(draw_rect.size, pygame.SRCALPHA)
+            if state == "void":
+                color = (180, 40, 120, 160)
+            elif state == "sealed":
+                color = (80, 20, 110, 200)
+            else:
+                color = (110, 30, 140, 140)
+            surf.fill(color)
+            pygame.draw.rect(surf, (255, 160, 240, 220), surf.get_rect(), 2)
+            self.screen.blit(surf, draw_rect.topleft)
+
+    def _draw_lab_barriers(self) -> None:
+        if not self.lab_barriers:
+            return
+        scale = settings.MAP_SCALE
+        for barrier in self.lab_barriers:
+            rect = barrier.get("rect")
+            if not rect:
+                continue
+            draw_rect = pygame.Rect(
+                int(rect.x * scale + self.map_offset[0]),
+                int(rect.y * scale + self.map_offset[1]),
+                int(rect.width * scale),
+                int(rect.height * scale),
+            )
+            surf = pygame.Surface(draw_rect.size, pygame.SRCALPHA)
+            surf.fill((40, 160, 220, 140))
+            pygame.draw.rect(surf, (120, 220, 255, 220), surf.get_rect(), 3)
+            self.screen.blit(surf, draw_rect.topleft)
+
+    def _draw_lab_environment(self) -> None:
+        self._draw_lab_traps()
+        self._draw_lab_barriers()
+
+    def _player_map_pos(self) -> tuple[float, float]:
+        return (
+            self.player_rect.centerx / settings.MAP_SCALE,
+            self.player_rect.centery / settings.MAP_SCALE,
+        )
+
+    def _lab_choose_fight(self, npc_state: dict) -> None:
+        if npc_state.get("enemy_spawned"):
+            return
+        self.lab_branch = "fight"
+        npc_state["state"] = "hostile"
+        npc_state["enemy_spawned"] = True
+        self._show_dialog(["指引者：抑制协议启动，小心它的冲撞。"], title="指引者")
+        self._lab_spawn_npc_enemy()
+        self.combat_active = True
+        self._set_quest_stage("lab_choice")
+
+    def _lab_spawn_npc_enemy(self) -> None:
+        if not self.map_data:
+            return
+        ex, ey = self._lab_units_to_display_pos(3.2, 3.2)
+        enemy = {
+            "x": ex,
+            "y": ey,
+            "hp": 70.0,
+            "max_hp": 70.0,
+            "state": "aggro",
+            "fade_timer": settings.ENEMY_FADE_DURATION,
+            "flash_timer": 0.0,
+            "aggro": True,
+            "show_health": settings.ENEMY_HEALTH_BAR_VIS_DURATION,
+            "attack_timer": 0.3,
+            "attack_anim_timer": 0.0,
+        }
+        self.enemies.append(enemy)
+
+    def _lab_spawn_bypass_enemies(self) -> None:
+        if not self.map_data:
+            return
+        positions = [(9.5, 6.4), (11.2, 8.8)]
+        for ux, uy in positions:
+            ex, ey = self._lab_units_to_display_pos(ux, uy)
+            self.enemies.append({
+                "x": ex,
+                "y": ey,
+                "hp": 55.0,
+                "max_hp": 55.0,
+                "state": "idle",
+                "fade_timer": settings.ENEMY_FADE_DURATION,
+                "flash_timer": 0.0,
+                "aggro": False,
+                "show_health": 0.0,
+                "attack_timer": 0.6,
+                "attack_anim_timer": 0.0,
+            })
+        if self.enemies:
+            self.combat_active = True
+
+    def _lab_add_barrier(self, cells: list[tuple[int, int]]) -> None:
+        if not cells:
+            return
+        self._lab_set_cells(cells, True)
+        rect = self._lab_rect_from_cells(cells)
+        self.lab_barriers.append({
+            "cells": cells,
+            "rect": rect,
+        })
+        self.floor_flags["lab_barrier_active"] = True
+
+    def _lab_choose_bypass(self, npc_state: dict) -> None:
+        if self.lab_branch == "fight":
+            return
+        self.lab_branch = "bypass"
+        npc_state["state"] = "bypass"
+        self.floor_flags["lab_branch_resolved"] = True
+        self._show_dialog(["指引者：记录选择，沿回廊绕行。警惕后续陷阱。"], title="指引者")
+        for trap in self.lab_traps:
+            if trap.get("id") in {"trap2", "trap3"}:
+                trap["active"] = True
+                trap["timer"] = max(0.5, trap.get("timer", 0.5))
+        barrier_cells = self._lab_cells_from_units(8, 4, 3, 2)
+        self._lab_add_barrier(barrier_cells)
+        self._set_quest_stage("lab_bypass")
+
+    def _update_floor_logic(self, dt: float) -> None:
+        if self.current_floor == "F40":
+            self._update_floor_f40(dt)
+
+    def _update_floor_f40(self, dt: float) -> None:
+        if not self.map_data:
+            return
+        if not self.floor_flags.get("lab_intro_line"):
+            timer = self.floor_timers.get("lab_intro_delay", 0.0) - dt
+            if timer <= 0.0:
+                self._show_dialog(["指引者：感官实验室。环境数据高度不稳定，请保持警惕。"], title="指引者")
+                self.floor_flags["lab_intro_line"] = True
+                self.floor_timers.pop("lab_intro_delay", None)
+            else:
+                self.floor_timers["lab_intro_delay"] = timer
+        px, py = self._player_map_pos()
+        if not self.floor_flags.get("lab_trap1_triggered") and py <= 210:
+            self.floor_flags["lab_trap1_triggered"] = True
+            self._lab_trigger_trap("trap1")
+            self._set_quest_stage("lab_path")
+        self._lab_update_traps(dt)
+        npc_state = self.lab_npc_state.get("logic_error_entity")
+        if npc_state and npc_state.get("state") == "unstable" and not self.floor_flags.get("lab_branch_resolved"):
+            anchor = npc_state.get("anchor_pos")
+            if anchor:
+                if abs(px - anchor[0]) > 90 or py < anchor[1] - 45:
+                    self._lab_choose_bypass(npc_state)
+        if self.lab_branch == "bypass" and not self.floor_flags.get("lab_bypass_spawns") and py <= 150:
+            self._lab_spawn_bypass_enemies()
+            self.floor_flags["lab_bypass_spawns"] = True
+        if self.lab_branch == "bypass" and self.quest_stage == "lab_bypass" and px >= 250 and py <= 120:
+            self._set_quest_stage("lab_switch")
+        if self.lab_branch == "fight" and self.floor_flags.get("lab_branch_resolved") and self.quest_stage == "lab_choice":
+            self._set_quest_stage("lab_switch")
+
+    def _handle_switch_interaction(self, trig: dict) -> None:
+        if self.current_floor != "F40":
+            self._show_dialog(["开关没有响应。"], title="提示")
+            return
+        if not self.floor_flags.get("lab_branch_resolved"):
+            self._show_dialog(["指引者：先稳住实验区，再尝试开关。"], title="指引者")
+            return
+        if self.floor_flags.get("lab_switch_activated"):
+            self._show_dialog(["系统：权限已解锁，电梯待命。"], title="系统")
+            return
+        self.floor_flags["lab_switch_activated"] = True
+        self._set_quest_stage("lab_exit")
+        self.elevator_locked = False
+        self._show_dialog(["系统：权限同步完成。电梯锁定解除。"], title="系统")
+
+    def _handle_npc_interaction(self, trig: dict) -> None:
+        if self.current_floor != "F40":
+            self._show_dialog(["没有回应。"], title="提示")
+            return
+        npc_id = trig.get("id", "npc")
+        state = self.lab_npc_state.setdefault(npc_id, {"dialog_index": 0, "state": "neutral"})
+        current_state = state.get("state", "neutral")
+        if current_state == "hostile":
+            self._show_dialog(["它已经完全失控！"], title="指引者")
+            return
+        if current_state == "defeated":
+            self._show_dialog(["残余的数据在缓慢蒸发。"], title="指引者")
+            return
+        if current_state == "bypass":
+            self._show_dialog(["逻辑错误实体：......"], title="逻辑错误实体")
+            return
+        if current_state == "unstable":
+            self._lab_choose_fight(state)
+            return
+        idx = state.get("dialog_index", 0)
+        if idx == 0:
+            lines = ["逻辑错误实体：Ugh... again..."]
+            state["dialog_index"] = 1
+        elif idx == 1:
+            lines = ["逻辑错误实体：Why... does it always hurt here?"]
+            state["dialog_index"] = 2
+        else:
+            lines = [
+                "逻辑错误实体：The floor! It's breathing! Can't you feel it?!",
+                "指引者：发现逻辑错误实体，建议清除或寻找替代路径。",
+            ]
+            state["dialog_index"] = 2
+            state["state"] = "unstable"
+            anchor = trig.get("rect")
+            if anchor:
+                ax = (anchor[0] + anchor[2]) / 2 / settings.MAP_SCALE
+                ay = (anchor[1] + anchor[3]) / 2 / settings.MAP_SCALE
+                state["anchor_pos"] = (ax, ay)
+            else:
+                state["anchor_pos"] = self._player_map_pos()
+            self.lab_branch = ""
+            self._set_quest_stage("lab_choice")
+        self._show_dialog(lines, title="逻辑错误实体")
+
+    def _lab_on_enemies_cleared(self) -> None:
+        npc_state = self.lab_npc_state.get("logic_error_entity")
+        if self.lab_branch == "fight" and npc_state and npc_state.get("state") == "hostile":
+            npc_state["state"] = "defeated"
+            self.floor_flags["lab_branch_resolved"] = True
+            self._set_quest_stage("lab_switch")
+            self._show_dialog(["指引者：异常数据已清除，前往终端完成授权。"], title="指引者")
+        else:
+            self._show_dialog(["指引者：干扰源消散，继续推进。"], title="指引者")
 
     def _render(self) -> None:
         if self.in_menu:
@@ -308,6 +875,9 @@ class Game:
         self.screen.fill(settings.BACKGROUND_COLOR)
         if self.map_surface:
             self.screen.blit(self.map_surface, self.map_offset)
+        if self.current_floor == "F40":
+            self._draw_lab_environment()
+        self._draw_enemy_attack_fx()
         self._draw_enemies()
         self._draw_bullets()
         player_screen_pos = (settings.WINDOW_WIDTH // 2, settings.WINDOW_HEIGHT // 2)
@@ -317,11 +887,14 @@ class Game:
         else:
             pygame.draw.rect(self.screen, settings.PLAYER_COLOR, pygame.Rect(0, 0, *settings.PLAYER_SIZE).move(
                 player_screen_pos[0] - settings.PLAYER_SIZE[0] // 2, player_screen_pos[1] - settings.PLAYER_SIZE[1] // 2))
+        if self.player_hit_timer > 0.0:
+            self._draw_player_hit_flash()
 
         self._render_minimap()
         self._draw_quest_hud()
-        self._draw_ammo_hud()
-        self._draw_reload_bar()
+        health_rect = self._draw_player_health_hud()
+        ammo_rect = self._draw_ammo_hud(health_rect)
+        self._draw_reload_bar(ammo_rect)
         self._draw_prompt()
         self._draw_dialog()
         self._draw_debug_coords()
@@ -484,6 +1057,8 @@ class Game:
 
     def _manual_axis(self, keys: pygame.key.ScancodeWrapper, dt: float) -> tuple[int, int]:
         # WASD/arrow with cancellation rules; speed matches auto-path (PLAYER_SPEED)
+        if self.player_dead:
+            return (0, 0)
         def held(key_codes: tuple[int, ...]) -> bool:
             return any(keys[kc] for kc in key_codes if kc < len(keys)) or any((kc in self._keys_down) for kc in key_codes)
 
@@ -533,7 +1108,7 @@ class Game:
         self.reload_timer = settings.GUN_RELOAD_TIME
 
     def _try_fire(self) -> None:
-        if not self.map_data:
+        if not self.map_data or self.player_dead:
             return
         if self.reload_timer > 0:
             return
@@ -580,7 +1155,6 @@ class Game:
         max_y = len(self.map_data.collision_grid)
         max_x = len(self.map_data.collision_grid[0]) if max_y else 0
         next_bullets: list[dict] = []
-        any_enemy_removed = False
         for b in self.bullets:
             b["ttl"] -= dt
             if b["ttl"] <= 0:
@@ -591,16 +1165,28 @@ class Game:
             hit_enemy = None
             hit_radius_sq = (settings.ENEMY_RADIUS + settings.GUN_BULLET_RADIUS) ** 2
             for enemy in self.enemies:
+                if enemy.get("state") == "dying":
+                    continue
                 dx = enemy["x"] - b["x"]
                 dy = enemy["y"] - b["y"]
                 if dx * dx + dy * dy <= hit_radius_sq:
                     hit_enemy = enemy
                     break
             if hit_enemy:
-                hit_enemy["hits"] -= 1
-                if hit_enemy["hits"] <= 0:
-                    hit_enemy["dead"] = True
-                    any_enemy_removed = True
+                max_hp = float(hit_enemy.get("max_hp", settings.ENEMY_MAX_HEALTH))
+                current_hp = float(hit_enemy.get("hp", max_hp))
+                current_hp = max(0.0, current_hp - settings.PLAYER_BULLET_DAMAGE)
+                hit_enemy["hp"] = current_hp
+                hit_enemy["max_hp"] = max_hp
+                hit_enemy["flash_timer"] = settings.ENEMY_HIT_FLASH_TIME
+                hit_enemy["show_health"] = settings.ENEMY_HEALTH_BAR_VIS_DURATION
+                hit_enemy["aggro"] = True
+                if hit_enemy.get("state") == "idle":
+                    hit_enemy["state"] = "aggro"
+                if current_hp <= 0.0 and hit_enemy.get("state") != "dying":
+                    hit_enemy["state"] = "dying"
+                    hit_enemy["fade_timer"] = settings.ENEMY_FADE_DURATION
+                    hit_enemy["attack_anim_timer"] = 0.0
                 continue  # bullet consumed on hit
 
             cx = int(b["x"] // cell_px)
@@ -611,47 +1197,459 @@ class Game:
                 continue
             next_bullets.append(b)
         self.bullets = next_bullets
-        if any_enemy_removed:
-            self.enemies = [e for e in self.enemies if not e.get("dead")]
-            if not self.enemies and self.combat_active:
-                self._on_enemies_cleared()
+
+    def _apply_player_damage(self, amount: float) -> None:
+        if amount <= 0 or self.player_dead:
+            return
+        self.player_health = max(0.0, self.player_health - float(amount))
+        self.player_hit_timer = max(self.player_hit_timer, settings.PLAYER_HIT_FLASH_TIME)
+        self._reset_regen_cooldown()
+        if self.player_health <= 0.0:
+            self._handle_player_death()
+
+    def _handle_player_death(self) -> None:
+        if self.player_dead:
+            return
+        self.player_dead = True
+        self.combat_active = False
+        self.path = []
+        self.path_target = None
+        self.path_goal_cell = None
+        self._show_dialog(["系统：生命体征归零。", "按 Enter 返回标题界面。"], title="警告")
+        self.dialog_timer = 0.0
+        self._reset_regen_cooldown()
+
+    def _reset_regen_cooldown(self) -> None:
+        self.regen_cooldown = settings.PLAYER_REGEN_COOLDOWN
+        self.regen_active = False
+
+    def _restart_to_menu(self) -> None:
+        self.start_menu.reset()
+        self.current_floor = settings.START_FLOOR
+        self._load_floor(settings.MAP_FILES[self.current_floor])
+        self.in_menu = True
+
+    def _start_frame_combat(self) -> None:
+        if self.combat_active:
+            return
+        self._spawn_tutorial_enemies()
+        if self.enemies:
+            self._set_quest_stage("combat")
+            self.combat_active = True
+        else:
+            self._set_quest_stage("log")
+            self.combat_active = False
+
+    def _update_enemies(self, dt: float) -> None:
+        if not self.enemies:
+            self.any_enemy_aggro = False
+            return
+        remaining: list[dict] = []
+        removed_any = False
+        any_aggro = False
+        px, py = self.player_rect.center
+        aggro_sq = settings.ENEMY_AGGRO_RADIUS ** 2
+        lose_sq = settings.ENEMY_LOSE_INTEREST_RADIUS ** 2
+        attack_range = settings.ENEMY_ATTACK_RANGE
+        for enemy in self.enemies:
+            enemy.setdefault("hp", float(settings.ENEMY_MAX_HEALTH))
+            enemy.setdefault("max_hp", float(settings.ENEMY_MAX_HEALTH))
+            enemy.setdefault("state", "idle")
+            enemy.setdefault("aggro", False)
+            enemy.setdefault("show_health", 0.0)
+            enemy.setdefault("attack_timer", random.uniform(0.1, settings.ENEMY_ATTACK_COOLDOWN))
+            enemy.setdefault("attack_anim_timer", 0.0)
+            if enemy.get("flash_timer", 0.0) > 0.0:
+                enemy["flash_timer"] = max(0.0, enemy["flash_timer"] - dt)
+            if enemy.get("show_health", 0.0) > 0.0:
+                enemy["show_health"] = max(0.0, enemy["show_health"] - dt)
+            if enemy.get("state") == "dying":
+                fade = enemy.get("fade_timer", settings.ENEMY_FADE_DURATION) - dt
+                enemy["fade_timer"] = fade
+                if fade <= 0.0:
+                    removed_any = True
+                    continue
+                remaining.append(enemy)
+                continue
+
+            dx = px - enemy["x"]
+            dy = py - enemy["y"]
+            dist_sq = dx * dx + dy * dy
+
+            aggro = False
+            if not self.player_dead:
+                if enemy.get("aggro", False):
+                    aggro = dist_sq <= lose_sq
+                else:
+                    aggro = dist_sq <= aggro_sq
+            enemy["aggro"] = aggro
+
+            if enemy.get("attack_anim_timer", 0.0) > 0.0:
+                enemy["attack_anim_timer"] = max(0.0, enemy["attack_anim_timer"] - dt)
+                if enemy["attack_anim_timer"] <= 0.0 and enemy.get("state") == "attacking":
+                    enemy["state"] = "aggro"
+
+            if not aggro:
+                enemy["state"] = "idle"
+                enemy["attack_timer"] = max(0.0, enemy.get("attack_timer", 0.0) - dt)
+                remaining.append(enemy)
+                continue
+
+            any_aggro = True
+            enemy["state"] = "aggro"
+            dist = max(0.0001, math.sqrt(dist_sq))
+            enemy["attack_timer"] = max(0.0, enemy.get("attack_timer", 0.0) - dt)
+
+            if dist > attack_range and not self.player_dead:
+                step = settings.ENEMY_MOVE_SPEED * dt
+                if step > 0:
+                    move_x = int(round(dx / dist * step))
+                    move_y = int(round(dy / dist * step))
+                    if move_x or move_y:
+                        self._move_enemy(enemy, move_x, move_y)
+            elif dist <= attack_range and enemy["attack_timer"] <= 0.0:
+                self._apply_player_damage(settings.ENEMY_ATTACK_DAMAGE)
+                enemy["attack_timer"] = settings.ENEMY_ATTACK_COOLDOWN
+                enemy["state"] = "attacking"
+                enemy["attack_anim_timer"] = settings.ENEMY_ATTACK_ANIM_TIME
+                enemy["show_health"] = settings.ENEMY_HEALTH_BAR_VIS_DURATION
+                enemy["flash_timer"] = settings.ENEMY_ATTACK_FLASH_TIME
+                self._spawn_enemy_attack_fx(enemy)
+
+            remaining.append(enemy)
+        self.enemies = remaining
+        self.any_enemy_aggro = any_aggro
+        if removed_any and not self.enemies and self.combat_active:
+            self._on_enemies_cleared()
+
+    def _move_enemy(self, enemy: dict, dx: int, dy: int) -> None:
+        if not self.map_data or (dx == 0 and dy == 0):
+            return
+        r = settings.ENEMY_RADIUS
+        collider = pygame.Rect(0, 0, r * 2, r * 2)
+        collider.center = (int(enemy.get("x", 0.0)), int(enemy.get("y", 0.0)))
+        moved = collision.move_with_collision(
+            collider,
+            (dx, dy),
+            self.map_data.collision_grid,
+            cell_size=self.map_data.cell_size * settings.MAP_SCALE,
+            substep=settings.COLLISION_SUBSTEP,
+        )
+        enemy["x"] = float(moved.centerx)
+        enemy["y"] = float(moved.centery)
+
+    def _spawn_enemy_attack_fx(self, enemy: dict) -> None:
+        duration = settings.ENEMY_ATTACK_FX_DURATION
+        self.enemy_attack_fx.append({
+            "x": float(enemy.get("x", 0.0)),
+            "y": float(enemy.get("y", 0.0)),
+            "timer": duration,
+            "duration": duration,
+        })
+
+    def _update_enemy_attack_fx(self, dt: float) -> None:
+        if not self.enemy_attack_fx:
+            return
+        active: list[dict] = []
+        for fx in self.enemy_attack_fx:
+            timer = fx.get("timer", 0.0) - dt
+            if timer <= 0.0:
+                continue
+            fx["timer"] = timer
+            active.append(fx)
+        self.enemy_attack_fx = active
+
+    def _draw_enemy_attack_fx(self) -> None:
+        if not self.enemy_attack_fx:
+            return
+        max_radius = settings.ENEMY_ATTACK_FX_MAX_RADIUS
+        for fx in self.enemy_attack_fx:
+            duration = max(0.001, fx.get("duration", settings.ENEMY_ATTACK_FX_DURATION))
+            progress = 1.0 - fx.get("timer", 0.0) / duration
+            radius = max(6, int(max_radius * progress))
+            alpha = max(0, min(180, int(200 * (1.0 - progress))))
+            surf = pygame.Surface((radius * 2, radius * 2), pygame.SRCALPHA)
+            color = (*settings.ENEMY_COLOR, alpha)
+            pygame.draw.circle(surf, color, (radius, radius), radius, width=3)
+            sx = int(fx["x"] + self.map_offset[0]) - radius
+            sy = int(fx["y"] + self.map_offset[1]) - radius
+            self.screen.blit(surf, (sx, sy))
+
+    def _draw_player_hit_flash(self) -> None:
+        if self.player_hit_timer <= 0.0:
+            return
+        if settings.PLAYER_HIT_FLASH_TIME <= 0.0:
+            return
+        progress = max(0.0, min(1.0, self.player_hit_timer / settings.PLAYER_HIT_FLASH_TIME))
+        alpha = int(settings.PLAYER_HIT_FLASH_COLOR[3] * progress)
+        if alpha <= 0:
+            return
+        size = int(150 + 60 * (1.0 - progress))
+        overlay = pygame.Surface((size, size), pygame.SRCALPHA)
+        pygame.draw.circle(
+            overlay,
+            (*settings.PLAYER_HIT_FLASH_COLOR[:3], alpha),
+            (size // 2, size // 2),
+            size // 2,
+        )
+        x = settings.WINDOW_WIDTH // 2 - size // 2
+        y = settings.WINDOW_HEIGHT // 2 - size // 2
+        self.screen.blit(overlay, (x, y))
 
     def _start_log_sequence(self) -> None:
         pass
 
+
     def _spawn_tutorial_enemies(self) -> None:
-        if not self.map_surface:
+        if not self.map_surface or not self.map_data:
+            self.enemies = []
             return
+        if self.current_floor == "F50":
+            manual_points = [(170, 200), (220, 200), (195, 225)]
+            manual_spawns: list[dict] = []
+            grid = self.map_data.collision_grid
+            cell_size = max(1, self.map_data.cell_size)
+            max_y = len(grid)
+            max_x = len(grid[0]) if max_y else 0
+            scale = settings.MAP_SCALE
+            for map_x, map_y in manual_points:
+                gx = int(map_x // cell_size)
+                gy = int(map_y // cell_size)
+                if not (0 <= gx < max_x and 0 <= gy < max_y):
+                    continue
+                if grid[gy][gx] not in settings.PASSABLE_VALUES:
+                    continue
+                px = int(map_x * scale)
+                py = int(map_y * scale)
+                manual_spawns.append({
+                    "x": float(px),
+                    "y": float(py),
+                    "hp": float(settings.ENEMY_MAX_HEALTH),
+                    "max_hp": float(settings.ENEMY_MAX_HEALTH),
+                    "state": "idle",
+                    "fade_timer": settings.ENEMY_FADE_DURATION,
+                    "flash_timer": 0.0,
+                    "aggro": False,
+                    "show_health": 0.0,
+                    "attack_timer": random.uniform(0.3, settings.ENEMY_ATTACK_COOLDOWN),
+                    "attack_anim_timer": 0.0,
+                })
+            if len(manual_spawns) == len(manual_points):
+                self.enemies = manual_spawns
+                return
         base_x, base_y = self.player_rect.center
-        map_w, map_h = self.map_surface.get_size()
-        offsets = [(120, -40), (-120, 40), (0, 120)]
+        grid_w, grid_h = self.map_data.grid_size
+        cell_px = self.map_data.cell_size * settings.MAP_SCALE
+        start_cell = (
+            max(0, min(grid_w - 1, int(base_x // cell_px))),
+            max(0, min(grid_h - 1, int(base_y // cell_px))),
+        )
+        accessible = self._collect_accessible_cells(start_cell, settings.ENEMY_SPAWN_BFS_STEPS)
+        if not accessible:
+            self.enemies = []
+            return
+        taken_cells: set[tuple[int, int]] = {start_cell}
+        offsets = [(120, -40), (-120, 40), (0, 120), (160, 0), (-160, 0), (0, -160)]
         spawned: list[dict] = []
+        max_cell_distance = max(4, settings.ENEMY_SPAWN_MAX_CELL_DISTANCE)
         for ox, oy in offsets:
-            x = max(20, min(map_w - 20, base_x + ox))
-            y = max(20, min(map_h - 20, base_y + oy))
+            desired_cell = (
+                max(0, min(grid_w - 1, int((base_x + ox) // cell_px))),
+                max(0, min(grid_h - 1, int((base_y + oy) // cell_px))),
+            )
+            spawn_cell = self._pick_spawn_cell(desired_cell, accessible, taken_cells, max_cell_distance)
+            if not spawn_cell:
+                continue
+            taken_cells.add(spawn_cell)
+            cx = spawn_cell[0] * cell_px + cell_px // 2
+            cy = spawn_cell[1] * cell_px + cell_px // 2
             spawned.append({
-                "x": float(x),
-                "y": float(y),
-                "hits": settings.ENEMY_HITS_TO_KILL,
-                "dead": False,
+                "x": float(cx),
+                "y": float(cy),
+                "hp": float(settings.ENEMY_MAX_HEALTH),
+                "max_hp": float(settings.ENEMY_MAX_HEALTH),
+                "state": "idle",
+                "fade_timer": settings.ENEMY_FADE_DURATION,
+                "flash_timer": 0.0,
+                "aggro": False,
+                "show_health": 0.0,
+                "attack_timer": random.uniform(0.3, settings.ENEMY_ATTACK_COOLDOWN),
+                "attack_anim_timer": 0.0,
             })
+            if len(spawned) >= 3:
+                break
+        if len(spawned) < 3:
+            for cell in accessible:
+                if len(spawned) >= 3:
+                    break
+                if cell in taken_cells:
+                    continue
+                dist_start = abs(cell[0] - start_cell[0]) + abs(cell[1] - start_cell[1])
+                if dist_start == 0:
+                    continue
+                taken_cells.add(cell)
+                cx = cell[0] * cell_px + cell_px // 2
+                cy = cell[1] * cell_px + cell_px // 2
+                spawned.append({
+                    "x": float(cx),
+                    "y": float(cy),
+                    "hp": float(settings.ENEMY_MAX_HEALTH),
+                    "max_hp": float(settings.ENEMY_MAX_HEALTH),
+                    "state": "idle",
+                    "fade_timer": settings.ENEMY_FADE_DURATION,
+                    "flash_timer": 0.0,
+                    "aggro": False,
+                    "show_health": 0.0,
+                    "attack_timer": random.uniform(0.3, settings.ENEMY_ATTACK_COOLDOWN),
+                    "attack_anim_timer": 0.0,
+                })
+        if len(spawned) < 3 and self.map_surface:
+            map_w, map_h = self.map_surface.get_size()
+            fallback_offsets = [(150, 0), (-150, 0), (0, 150), (0, -150), (180, 90), (-180, -90)]
+            for ox, oy in fallback_offsets:
+                if len(spawned) >= 3:
+                    break
+                px = max(0, min(map_w - 1, int(base_x + ox)))
+                py = max(0, min(map_h - 1, int(base_y + oy)))
+                cell = (max(0, min(grid_w - 1, px // cell_px)), max(0, min(grid_h - 1, py // cell_px)))
+                if cell in taken_cells:
+                    continue
+                if self.map_data.collision_grid[cell[1]][cell[0]] not in settings.PASSABLE_VALUES:
+                    continue
+                taken_cells.add(cell)
+                cx = cell[0] * cell_px + cell_px // 2
+                cy = cell[1] * cell_px + cell_px // 2
+                spawned.append({
+                    "x": float(cx),
+                    "y": float(cy),
+                    "hp": float(settings.ENEMY_MAX_HEALTH),
+                    "max_hp": float(settings.ENEMY_MAX_HEALTH),
+                    "state": "idle",
+                    "fade_timer": settings.ENEMY_FADE_DURATION,
+                    "flash_timer": 0.0,
+                    "aggro": False,
+                    "show_health": 0.0,
+                    "attack_timer": random.uniform(0.3, settings.ENEMY_ATTACK_COOLDOWN),
+                    "attack_anim_timer": 0.0,
+                })
         self.enemies = spawned
-        self.combat_active = True
+
+    def _collect_accessible_cells(self, start_cell: tuple[int, int], max_steps: int) -> list[tuple[int, int]]:
+        if not self.map_data:
+            return []
+        grid = self.map_data.collision_grid
+        passable = settings.PASSABLE_VALUES
+        cell_size = self.map_data.cell_size
+        cells_x = max(1, (settings.PLAYER_SIZE[0] + cell_size - 1) // cell_size)
+        cells_y = max(1, (settings.PLAYER_SIZE[1] + cell_size - 1) // cell_size)
+        radius_x = (cells_x - 1) // 2
+        radius_y = (cells_y - 1) // 2
+        queue: deque[tuple[tuple[int, int], int]] = deque([(start_cell, 0)])
+        visited: set[tuple[int, int]] = {start_cell}
+        cells: list[tuple[int, int]] = [start_cell]
+        while queue:
+            (cx, cy), depth = queue.popleft()
+            if depth >= max_steps:
+                continue
+            for (nx, ny), _ in pathfinding.neighbors(
+                cx,
+                cy,
+                grid,
+                passable,
+                radius_x=radius_x,
+                radius_y=radius_y,
+            ):
+                if (nx, ny) in visited:
+                    continue
+                visited.add((nx, ny))
+                queue.append(((nx, ny), depth + 1))
+                cells.append((nx, ny))
+        return cells
+
+    def _pick_spawn_cell(
+        self,
+        desired_cell: tuple[int, int],
+        accessible_cells: list[tuple[int, int]],
+        taken_cells: set[tuple[int, int]],
+        max_distance: int,
+    ) -> tuple[int, int] | None:
+        best_cell: tuple[int, int] | None = None
+        best_score = 1_000_000
+        for cell in accessible_cells:
+            if cell in taken_cells:
+                continue
+            dist = abs(cell[0] - desired_cell[0]) + abs(cell[1] - desired_cell[1])
+            if dist > max_distance:
+                continue
+            if dist < best_score:
+                best_cell = cell
+                best_score = dist
+                if dist == 0:
+                    break
+        return best_cell
 
     def _on_enemies_cleared(self) -> None:
         self.combat_active = False
-        self._set_quest_stage("elevator")
+        if self.current_floor == "F40":
+            self._lab_on_enemies_cleared()
+            return
+        self._set_quest_stage("log")
+        self._show_dialog(["异常源已清除，终端恢复可用。"], title="系统")
 
     def _draw_enemies(self) -> None:
         if not self.enemies:
             return
-        r = settings.ENEMY_RADIUS
-        color = settings.ENEMY_COLOR
+        base_radius = settings.ENEMY_RADIUS
+        base_color = settings.ENEMY_COLOR
+        flash_color = settings.ENEMY_HIT_FLASH_COLOR
+        fade_total = max(0.001, settings.ENEMY_FADE_DURATION)
         ox, oy = self.map_offset
-        for e in self.enemies:
-            sx = int(e["x"] + ox)
-            sy = int(e["y"] + oy)
-            pygame.draw.circle(self.screen, color, (sx, sy), r)
+        for enemy in self.enemies:
+            sx = int(enemy["x"] + ox)
+            sy = int(enemy["y"] + oy)
+            state = enemy.get("state", "idle")
+            color = flash_color if enemy.get("flash_timer", 0.0) > 0.0 else base_color
+            draw_r = base_radius
+            alpha = 255
+            if state == "dying":
+                fade = max(0.0, min(fade_total, enemy.get("fade_timer", 0.0)))
+                alpha = int(255 * (fade / fade_total))
+            elif state == "attacking":
+                draw_r = base_radius + 4
+                duration = max(0.001, settings.ENEMY_ATTACK_ANIM_TIME)
+                anim_timer = enemy.get("attack_anim_timer", 0.0)
+                progress = 1.0 - min(1.0, anim_timer / duration)
+                alpha = int(220 + 35 * progress)
+            elif state == "idle":
+                alpha = 210
+            surf = pygame.Surface((draw_r * 2, draw_r * 2), pygame.SRCALPHA)
+            pygame.draw.circle(surf, (*color, alpha), (draw_r, draw_r), draw_r)
+            if state == "attacking":
+                pygame.draw.circle(surf, (255, 255, 255, alpha), (draw_r, draw_r), draw_r, width=2)
+            self.screen.blit(surf, (sx - draw_r, sy - draw_r))
+            self._draw_enemy_health_bar(enemy, sx, sy)
+
+    def _draw_enemy_health_bar(self, enemy: dict, sx: int, sy: int) -> None:
+        if enemy.get("state") == "dying":
+            return
+        max_hp = float(enemy.get("max_hp", settings.ENEMY_MAX_HEALTH))
+        hp = max(0.0, float(enemy.get("hp", max_hp)))
+        if max_hp <= 0:
+            return
+        if not (enemy.get("aggro") or hp < max_hp or enemy.get("show_health", 0.0) > 0.0):
+            return
+        width, height = settings.ENEMY_HEALTH_BAR_SIZE
+        margin = settings.ENEMY_HEALTH_BAR_MARGIN
+        bar_x = sx - width // 2
+        bar_y = sy - settings.ENEMY_RADIUS - margin
+        bg_rect = pygame.Rect(bar_x, bar_y, width, height)
+        pygame.draw.rect(self.screen, settings.ENEMY_HEALTH_BAR_BG, bg_rect)
+        if hp > 0:
+            ratio = max(0.0, min(1.0, hp / max_hp))
+            fill_rect = bg_rect.copy()
+            fill_rect.width = int(width * ratio)
+            pygame.draw.rect(self.screen, settings.ENEMY_HEALTH_BAR_COLOR, fill_rect)
+        pygame.draw.rect(self.screen, settings.ENEMY_HEALTH_BAR_BORDER, bg_rect, 1)
 
     def _draw_bullets(self) -> None:
         if not self.bullets:
@@ -756,11 +1754,28 @@ class Game:
         return scaled
 
     def _interaction_allowed(self, trig: dict) -> bool:
+        if self.player_dead:
+            return False
         t = trig.get("type")
-        if t == "terminal" and self.quest_stage not in {"log", "elevator"}:
-            return False
-        if t == "frame" and self.quest_stage not in {"explore", "log"}:
-            return False
+        if t == "terminal":
+            if self.combat_active:
+                return False
+            if self.current_floor == "F40":
+                return self.quest_stage in {"lab_switch", "lab_exit"}
+            return self.quest_stage in {"log", "elevator"}
+        if t == "frame":
+            if self.combat_active:
+                return False
+            return self.quest_stage in {"explore", "log"}
+        if t == "switch":
+            if self.current_floor == "F40":
+                return self.quest_stage in {"lab_switch", "lab_exit"}
+            return True
+        if t == "npc":
+            if self.current_floor == "F40":
+                npc_state = self.lab_npc_state.get(trig.get("id", ), {})
+                return not npc_state.get("hostile", False)
+            return True
         return True
 
     def _update_interaction_prompt(self) -> None:
@@ -798,6 +1813,10 @@ class Game:
             return "按F查看"
         if t == "frame":
             return "按F查看"
+        if t == "switch":
+            return "按F启动"
+        if t == "npc":
+            return "按F交流"
         return "按F互动"
 
     def _activate_interaction(self, trig: dict) -> None:
@@ -825,7 +1844,19 @@ class Game:
                 return
             msg = self._frame_message(trig.get("id", ""))
             self._show_dialog(msg, title="相框")
-            self._set_quest_stage("log")
+            if self.quest_stage == "explore":
+                self._start_frame_combat()
+            return
+        if t == "switch":
+            if not self._interaction_allowed(trig):
+                self._show_dialog(["还无法激活这台装置。"], title="提示")
+                return
+            self._handle_switch_interaction(trig)
+            return
+        if t == "npc":
+            if not self._interaction_allowed(trig):
+                return
+            self._handle_npc_interaction(trig)
             return
         # fallback
         self._show_dialog(["没有可以操作的反应。"], title="提示")
@@ -838,6 +1869,14 @@ class Game:
                 "受试体 \"Custodian\" 已相信首要任务为 \"拯救方舟\"。",
                 "生命体征：稳定。现实阻抗：0.2%。",
                 "继续推进第一阶段。",
+            ]
+        if term_id == "log_experiment_7g":
+            return [
+                "[SENSORY_DEPT - EXPERIMENT 7G]",
+                "Test Summary: Forced sensory contradiction.",
+                "Result: 87% subjects obeyed System guidance over personal senses.",
+                "Conclusion: Cognitive dependency remains optimal.",
+                "The Anchor holds.",
             ]
         return ["终端无响应。"]
 
@@ -853,13 +1892,20 @@ class Game:
         self.dialog_title = title
         self.dialog_timer = settings.DIALOG_LIFETIME
 
+    def _dismiss_dialog(self) -> None:
+        if not self.dialog_lines:
+            self.dialog_timer = 0.0
+            self.dialog_title = ""
+            return
+        self.dialog_lines = []
+        self.dialog_timer = 0.0
+        self.dialog_title = ""
+
     def _update_dialog(self, dt: float) -> None:
         if self.dialog_timer > 0:
-            self.dialog_timer -= dt
-            if self.dialog_timer <= 0:
-                self.dialog_lines = []
-                self.dialog_timer = 0.0
-                self.dialog_title = ""
+            self.dialog_timer = max(0.0, self.dialog_timer - dt)
+            if self.dialog_timer <= 0.0 and self.dialog_lines:
+                self._dismiss_dialog()
 
     def _draw_prompt(self) -> None:
         if not self.interaction_target:
@@ -935,14 +1981,50 @@ class Game:
         if self.quest_stage == "intro":
             return ["任务：等待系统初始化"]
         if self.quest_stage == "explore":
-            return ["任务：探索房间", "目标：查看桌上日志"]
+            return ["任务：探索房间", "目标：查看相框线索"]
+        if self.quest_stage == "combat":
+            return ["任务：清除异常", "目标：消灭现身的异常实体"]
         if self.quest_stage == "log":
-            return ["任务：查看终端日志"]
+            return ["任务：查看终端日志", "提示：终端已重新开放"]
         if self.quest_stage == "elevator":
             return ["任务：乘坐电梯前往F40"]
+        if self.quest_stage == "lab_intro":
+            return ["任务：评估感官实验室", "目标：离开电梯区域并侦测环境"]
+        if self.quest_stage == "lab_path":
+            return ["任务：前往实验枢纽", "目标：穿越扭曲走廊"]
+        if self.quest_stage == "lab_choice":
+            return ["任务：处理逻辑错误实体", "提示：决定战斗或寻找替代路径"]
+        if self.quest_stage == "lab_bypass":
+            return ["任务：绕过能量墙", "目标：沿回廊寻找开关"]
+        if self.quest_stage == "lab_switch":
+            return ["任务：解锁电梯权限", "目标：与终端与开关交互"]
+        if self.quest_stage == "lab_exit":
+            return ["任务：前往记忆档案馆", "目标：乘坐电梯离开感官实验室"]
         return []
 
-    def _draw_ammo_hud(self) -> None:
+    def _draw_player_health_hud(self) -> pygame.Rect:
+        max_hp = max(1.0, float(self.player_health_max))
+        current = max(0.0, float(self.player_health))
+        margin = settings.PLAYER_HEALTH_BAR_MARGIN
+        width, height = settings.PLAYER_HEALTH_BAR_SIZE
+        x = settings.WINDOW_WIDTH - margin - width
+        y = margin
+        bg_rect = pygame.Rect(x, y, width, height)
+        pygame.draw.rect(self.screen, settings.PLAYER_HEALTH_BAR_BG, bg_rect)
+        ratio = max(0.0, min(1.0, current / max_hp))
+        if ratio > 0:
+            fill_rect = bg_rect.copy()
+            fill_rect.width = int(width * ratio)
+            pygame.draw.rect(self.screen, settings.PLAYER_HEALTH_BAR_COLOR, fill_rect)
+        pygame.draw.rect(self.screen, settings.PLAYER_HEALTH_BAR_BORDER, bg_rect, 1)
+        hp_text = f"HP {int(math.ceil(current))}/{int(max_hp)}"
+        label = self.font_prompt.render(hp_text, True, settings.QUEST_TEXT)
+        label_x = max(8, x - label.get_width() - 12)
+        label_y = y + (height - label.get_height()) // 2
+        self.screen.blit(label, (label_x, label_y))
+        return bg_rect
+
+    def _draw_ammo_hud(self, avoid_rect: pygame.Rect | None = None) -> pygame.Rect:
         total = settings.GUN_CLIP_SIZE
         filled = max(0, min(total, self.ammo_in_clip))
         size = 12
@@ -952,14 +2034,20 @@ class Game:
         color_off = (70, 80, 90)
         x = settings.WINDOW_WIDTH - margin - total * (size + gap) + gap
         y = margin
+        if avoid_rect and y < avoid_rect.bottom + 6:
+            shift = (avoid_rect.bottom + 6) - y
+            y += shift
+        last_rect = pygame.Rect(x, y, 0, 0)
         for i in range(total):
             rect = pygame.Rect(x + i * (size + gap), y, size, size * 2)
             if i < filled:
                 pygame.draw.rect(self.screen, color_on, rect, border_radius=3)
             else:
                 pygame.draw.rect(self.screen, color_off, rect, width=1, border_radius=3)
+            last_rect = rect
+        return last_rect
 
-    def _draw_reload_bar(self) -> None:
+    def _draw_reload_bar(self, ammo_rect: pygame.Rect | None = None) -> None:
         if self.reload_timer <= 0:
             return
         margin = 12
@@ -967,6 +2055,8 @@ class Game:
         height = 10
         x = settings.WINDOW_WIDTH - margin - width
         y = margin + 32  # below ammo icons
+        if ammo_rect:
+            y = max(y, ammo_rect.bottom + 6)
         bg_rect = pygame.Rect(x, y, width, height)
         pygame.draw.rect(self.screen, (50, 60, 70), bg_rect, border_radius=3)
         progress = 1.0 - min(1.0, self.reload_timer / settings.GUN_RELOAD_TIME)
@@ -1091,7 +2181,7 @@ class Game:
     def _start_guidance_cutscene(self) -> None:
         self.cutscene_started = True
         self.cutscene_lines = [
-            {"speaker": "指引者", "text": "系统上线。欢迎回来，巡视员。正在初始化环境扫描..."},
+            {"speaker": "指引者", "text": "系统上线。欢迎回来，清除异常。正在初始化环境扫描..."},
             {"speaker": "指引者", "text": "检测到数据冗余，已清理。"},
             {"speaker": "指引者", "text": "起身校准体感：WASD/方向键移动，鼠标左键或空格射击，F 交互，R 装填。"},
             {"speaker": "指引者", "text": "需要导航时，右键点击地面会自动规划路径，按方向键随时打断并手动控制。"},
@@ -1147,9 +2237,9 @@ class Game:
 
     def _set_quest_stage(self, stage: str) -> None:
         self.quest_stage = stage
-        if stage == "elevator":
+        if stage in {"elevator", "lab_exit"}:
             self.elevator_locked = False
-        if stage in {"intro", "explore", "combat", "log"}:
+        if stage in {"intro", "explore", "combat", "log", "lab_intro", "lab_path", "lab_choice", "lab_bypass", "lab_switch"}:
             self.elevator_locked = True
 
     def _draw_cutscene_dialog(self) -> None:

@@ -52,6 +52,14 @@ PLAYER_SCALE = 3
 PLAYER_WALK_SHEET = IMAGES_DIR / "player_walk_cycle.png"
 PLAYER_WALK_FRAMES = 4
 PLAYER_WALK_FPS = 8
+PLAYER_MAX_HEALTH = 100
+PLAYER_HEALTH_BAR_MARGIN = 18
+PLAYER_HEALTH_BAR_SIZE = (220, 18)
+PLAYER_HEALTH_BAR_BG = (26, 36, 48)
+PLAYER_HEALTH_BAR_COLOR = (120, 220, 180)
+PLAYER_HEALTH_BAR_BORDER = (200, 235, 250)
+PLAYER_REGEN_COOLDOWN = 60.0  # seconds without threats before regen
+PLAYER_REGEN_RATE = 1.0  # HP per second when regening
 MINIMAP_BG = (10, 12, 16)
 MINIMAP_WALKABLE = (60, 140, 200)
 MINIMAP_PLAYER = (255, 230, 120)
@@ -67,11 +75,50 @@ GUN_CLIP_SIZE = 10
 GUN_BULLET_LIFETIME = 1.5
 GUN_BULLET_RADIUS = 3
 GUN_BULLET_COLOR = (255, 235, 120)
+PLAYER_BULLET_DAMAGE = 24
 
 # Enemies (tutorial placeholders)
 ENEMY_COLOR = (255, 120, 140)
 ENEMY_RADIUS = 14
 ENEMY_HITS_TO_KILL = 2
+ENEMY_HIT_FLASH_COLOR = (255, 240, 250)
+ENEMY_HIT_FLASH_TIME = 0.18
+ENEMY_FADE_DURATION = 0.6
+ENEMY_SPAWN_BFS_STEPS = 40
+ENEMY_SPAWN_MAX_CELL_DISTANCE = 36
+ENEMY_MAX_HEALTH = 60
+ENEMY_MOVE_SPEED = 90
+ENEMY_AGGRO_RADIUS = 320
+ENEMY_LOSE_INTEREST_RADIUS = 360
+ENEMY_ATTACK_RANGE = 70
+ENEMY_ATTACK_COOLDOWN = 1.4
+ENEMY_ATTACK_DAMAGE = 12
+ENEMY_ATTACK_FLASH_TIME = 0.2
+ENEMY_ATTACK_ANIM_TIME = 0.28
+ENEMY_ATTACK_FX_DURATION = 0.45
+ENEMY_ATTACK_FX_MAX_RADIUS = 64
+ENEMY_HEALTH_BAR_SIZE = (70, 8)
+ENEMY_HEALTH_BAR_MARGIN = 24
+ENEMY_HEALTH_BAR_BG = (30, 34, 45)
+ENEMY_HEALTH_BAR_COLOR = (255, 150, 170)
+ENEMY_HEALTH_BAR_BORDER = (250, 250, 255)
+ENEMY_HEALTH_BAR_VIS_DURATION = 2.0
+
+# Lab (F40) abstract layout colors
+LAB_WALL_COLOR = (12, 16, 24)
+LAB_BLOCK_COLORS = [
+    (68, 110, 180),
+    (72, 150, 190),
+    (52, 120, 170),
+    (88, 170, 200),
+]
+LAB_BLOCK_SPAN = 12
+LAB_INTERACT_COLORS = {
+    "npc": (180, 110, 210),
+    "terminal": (110, 210, 200),
+    "switch": (220, 190, 120),
+    "exit": (150, 220, 255),
+}
 
 # Interaction mask
 INTERACT_MASKS = {
@@ -86,6 +133,12 @@ INTERACT_ZONES = {
         {"id": "elevator", "type": "exit", "rect": (50, 195, 110, 215), "to_floor": "F40"},
         {"id": "family_photo", "type": "frame", "rect": (275, 115, 305, 130)},
         {"id": "log_kaines_001", "type": "terminal", "rect": (190, 89, 305, 140)},
+    ],
+    "F40": [
+        {"id": "lab_exit", "type": "exit", "rect": (285, 285, 315, 315), "to_floor": "F35"},
+        {"id": "log_experiment_7g", "type": "terminal", "rect": (268, 268, 292, 292)},
+        {"id": "lab_switch", "type": "switch", "rect": (292, 260, 316, 284)},
+        {"id": "logic_error_entity", "type": "npc", "rect": (128, 188, 152, 212)},
     ],
 }
 
@@ -113,6 +166,8 @@ QUEST_BG = (0, 0, 0, 140)
 QUEST_TEXT = (220, 230, 240)
 QUEST_TITLE = (150, 200, 255)
 DIALOG_LIFETIME = 4.0
+PLAYER_HIT_FLASH_TIME = 0.25
+PLAYER_HIT_FLASH_COLOR = (255, 80, 120, 140)
 
 # Click feedback
 CLICK_FEEDBACK_COLOR = (255, 230, 120)

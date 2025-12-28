@@ -1,41 +1,82 @@
-# MindscapeArk
+# Mindscape Ark
 
-Rebuilt scaffold for the first two floors (Floor50 / Dormitory, Floor40 / Sensory Lab) per design outlines. Python 3.9+, Pygame 2.5+.
+Mindscape Ark is a top-down narrative prototype built with Pygame. The current slice delivers the Dormitory (Floor 50) and Sensory Lab (Floor 40) with onboarding, combat, and branching encounter logic faithful to the design outline.
+
+## Project Status / 当前状态
+- 已完成 Completed: Boot-to-playable loop covering Floor 50 和 Floor 40，包含引导开场、战斗系统、分支剧情、任务 HUD 以及电梯解锁流程。
+- 下一步 Next up: 构建 Floor 35 场景、接入持久化存档、扩展武器与成就系统，并补充音效/特效打磨。
+
+## Requirements
+- Python 3.13 (see `.python-version`).
+- Dependencies handled by the project: `pygame>=2.6.1`, `openai`, `python-dotenv`. Install via `uv` or `pip`.
+- A desktop environment capable of opening a 1280×720 Pygame window.
+
+## Setup
+
+### Using uv (recommended)
+```bash
+uv sync
+```
+
+### Using pip
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -e .
+```
 
 ## Run
-- From repo root : `python -m MindscapeArk.src.main`
-- Click Start to enter Floor50. Controls: WASD/Arrow keys manual move (cancels path); Right-click auto-path (A*); Left mouse or Space to fire toward the mouse; F to interact; R to reload; ESC quits; F2 jumps to Floor40 (test). Keep input method in English so shortcuts work.
-- Camera stays centered on player; map is scaled up (MAP_SCALE=3).
+From the repository root:
+```bash
+uv run python -m src.main
+```
+If your virtual environment is already active, `python -m src.main` is sufficient. Keep the input method in English so shortcuts register. Press `F2` in-game to jump directly to Floor 40 for debugging.
 
-## Layout
-- `assets/images/Floor50.png`, `Floor40.png`: floor visuals (320x320). Map rendering scales by MAP_SCALE.
-- `assets/images/player.png`: player sprite (optional). Loaded and scaled by PLAYER_SCALE; falls back to rectangle if missing.
-- `assets/maps/floor50.json`, `floor40.json`: collision grids (cell_size=2), triggers, metadata, and image paths.
-- `src/core`: settings, game loop.
-- `src/maps/loader.py`: loads map JSON into MapData.
-- `src/systems/collision.py`: grid collision with sub-steps.
-- `src/systems/pathfinding.py`: A* grid pathing.
-- `src/systems/ui.py`: start menu.
-- `src/main.py`: entrypoint.
-- `data/saves/`: save location placeholder.
+## Controls / 操作
+- `WASD` / Arrow keys — 手动移动（支持对角线；相反方向会互锁直到松开）。
+- Mouse right-click — A* 自动寻路，无法直达时退化到最近可达格。
+- Mouse left-click / `Space` — 朝鼠标方向射击。
+- `F` — 触发提示的互动（终端、相框、开关、电梯、NPC）。
+- `R` — 装填弹匣。
+- `Esc` — 退出游戏。
+- `F2` — 调试跳转到 Floor 40。
 
-## Gameplay & systems
-- Intro boot reveal flows into a guided cutscene that teaches movement, shooting, auto-path (RMB), interaction, reload, and input-method reminder.
-- Quest/task flow with HUD under the minimap: intro -> explore -> elevator. Elevator stays locked until the log is read; updates to "乘坐电梯前往F40" when unlocked.
-- Dialog overlay and cutscene typing; space closes dialogs when open. Camera locks during cutscenes.
-- Auto font resolution: prefers bundled fonts from `assets/fonts` (e.g., NotoSansSC) before falling back to system fonts.
+## Current Gameplay Slice
 
-## Current Progress / 当前进度
-- Implemented playable loop for Floor 50 (Dormitory) and Floor 40 (Sensory Lab) with start menu, boot reveal, guided tutorial, quest HUD, and elevator gating aligned with current map data.
-  已实现 50 层宿舍与 40 层感官实验室的可玩循环，包含开始菜单、引导演出、任务 HUD 与基于现有地图数据的电梯解锁流程。
-- Core movement, interaction, and combat scaffolding are in place: manual WASD movement, right-click A* autop pathing with nearest fallback, shooting/reload cycle, dialog overlay, and minimap/HUD updates.
-  核心移动、交互与战斗脚手架已搭建：WASD 手动移动、右键 A* 自动寻路（含最近可达回退）、射击与装填循环、对话叠层以及小地图与 HUD 刷新。
-- Floor 50 interactions cover photo frame and terminal logs, unlocking the elevator after reading; Floor 40 currently loads collision/map art but uses placeholder triggers until narrative events are scripted.
-  50 层提供相框与终端日志交互，阅读后可解锁电梯；40 层目前能载入碰撞与地图贴图，但剧情事件仍为占位触发，尚未补全。
-- Enemy spawn hooks, multi-floor progression beyond F40, branching choices, achievement/perk systems, and save/data management are not yet implemented.
-  敌人刷怪流程、F40 之后的多楼层推进、分支抉择、成就/被动系统与存档数据管理尚未落地。
+### Boot & Floor 50 — Dormitory
+- Glitch 开机序列过渡到 Mosaic 地图揭示，再进入指引者的逐字 Cutscene 教学。
+- 任务阶段从 `intro → explore → combat → log → elevator`，期间电梯保持上锁。
+- 与相框互动触发三只异常实体；战斗包含玩家生命条、敌人仇恨/攻击前摇、命中闪光和死亡淡出。
+- 读取终端日志 `log_kaines_001` 后解锁电梯；对话浮层暂停世界，仅接受确认键。
 
-## Notes
-- Collision codes currently use 0=open, 1=blocking. Grid size 160x160 (2px cells for 320px images). Floor40 elevator area set to walkable.
-- Triggers include exits and interactables; exits swap floors (F50->F40). Pathfinding treats only 0 as passable.
-- Minimap (top-left) shows walkable cells only and player marker.
+### Floor 40 — Sensory Lab
+- 地图由碰撞网格实时渲染成抽象色块，遵循 “回” 形结构及可调色板。
+- 启动时生成陷阱与能量墙：trap1 永久坍塌迫使绕行；trap2/trap3 周期启动；切换分支后动态刷新。
+- 逻辑错误实体 NPC 记录玩家对抗或绕行的选择，分别引入战斗或陷阱挑战并驱动任务阶段（`lab_intro → lab_path → lab_choice → lab_bypass/lab_switch → lab_exit`）。
+- 开关与终端交互绑定电梯权限；逻辑错误实体分支清理完毕后才能解除封锁。电梯出口暂指向待建的 Floor 35。
+
+## Systems Implemented
+- **Movement & Pathfinding**: 手动移动与冲突锁定处理，右键 A* 寻路，最近点 fallback，路径跟随检测阻塞并重规划。
+- **Combat Loop**: 命中判定与子弹生存期、弹匣/冷却管理、玩家受击闪光、敌人追踪 AI、攻击前摇特效、死亡淡出。
+- **Interaction & Quests**: F 键提示、对话遮罩、逐字 Cutscene、任务 HUD、楼层切换、电梯锁与支线条件判断。
+- **UI & Feedback**: 最小化地图、任务面板、生命/弹药/装填 HUD、右键点击反馈、调试坐标显示。
+- **Assets Pipeline**: JSON 地图加载、Floor50 碰撞由 `Floor50_mask.png` 生成、抽象实验室渲染、字体自动解析为 `assets/fonts` 的 NotoSansSC、可选启动音效 `boot_glitch.wav`。
+- **Testing**: `tests/test_smoke.py` 作为导入烟雾测试，确保入口模块可初始化。
+
+## Repository Layout
+- `src/core` — 游戏循环、设置与楼层状态管理。
+- `src/systems` — 碰撞、寻路、UI。
+- `src/maps` — 地图数据类与加载方法。
+- `assets/images` — 楼层底图与角色动画；`assets/maps` — JSON 碰撞网格；`assets/audio` — 启动音效；`assets/fonts` — 字体资源。
+- `assets/…` 以外的 `data/saves` 目前预留为空（即将用于持久化存档）。
+
+## Roadmap
+1. 构建 Floor 35 地图、剧情节点与与 F40 电梯衔接。
+2. 打通持久化存档/读档流程，利用 `data/saves`.
+3. 扩展战斗：新增武器、怪物配置、成就/统计。
+4. 增强视听反馈：环境音效、命中特效、性能优化。
+
+## Troubleshooting
+- 若 `pygame` 未安装，请先执行安装步骤；headless 环境需要虚拟显示。
+- 在中文输入法下快捷键会失效，请切换到英文输入。
+- 如需快速验证实验室，使用 `F2` 或直接修改 `START_FLOOR` 常量。
