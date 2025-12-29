@@ -15,6 +15,7 @@ DEFAULT_MAP_PATH = MAPS_DIR / "floor50.json"
 MAP_FILES = {
     "F50": MAPS_DIR / "floor50.json",
     "F40": MAPS_DIR / "floor40.json",
+    "F35": MAPS_DIR / "floor35.json",
 }
 START_FLOOR = "F50"
 
@@ -124,6 +125,7 @@ LAB_INTERACT_COLORS = {
 INTERACT_MASKS = {
     "F50": IMAGES_DIR / "Floor50_mask.png",
     "F40": None,
+    "F35": None,
 }
 INTERACT_MASK_RADIUS = 12  # map pixels radius to consider near a red zone
 
@@ -139,6 +141,10 @@ INTERACT_ZONES = {
         {"id": "log_experiment_7g", "type": "terminal", "rect": (268, 268, 292, 292)},
         {"id": "lab_switch", "type": "switch", "rect": (292, 260, 316, 284)},
         {"id": "logic_error_entity", "type": "npc", "rect": (128, 188, 152, 212)},
+    ],
+    "F35": [
+        {"id": "archive_exit", "type": "exit", "rect": (300, 10, 340, 90), "to_floor": "F30"},
+        {"id": "log_elara_audio", "type": "terminal", "rect": (292, 330, 348, 388)},
     ],
 }
 
@@ -181,7 +187,10 @@ UI_FONT_NAME = None  # use default
 FLOOR_IMAGE_FILES = {
     "floor50": IMAGES_DIR / "Floor50.png",
     "floor40": IMAGES_DIR / "Floor40.png",
+    "floor35": IMAGES_DIR / "Floor_35.png",
 }
+ARCHIVE_BOSS_IMAGE = IMAGES_DIR / "Floor_35_2.png"
+
 
 # Gameplay placeholders
 PASSABLE_VALUES = {0}

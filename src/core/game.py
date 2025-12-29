@@ -85,6 +85,19 @@ class Game:
         self.lab_barriers: list[dict] = []
         self.lab_npc_state: dict[str, dict] = {}
         self.lab_branch = ""
+        self.archive_center = (0.0, 0.0)
+        self.archive_core_radius = 0.0
+        self.archive_warning_radius = 0.0
+        self.archive_boss: dict | None = None
+        self.archive_flags: dict[str, bool] = {}
+        self.archive_projectiles: list[dict] = []
+        self.archive_flash_sequence: list[dict] = []
+        self.archive_pulse_state: dict[str, float] = {}
+        self.archive_boss_sprite: pygame.Surface | None = self._load_archive_boss_sprite()
+        self.archive_flash_active = False
+        self.archive_flash_step = 0
+        self.archive_flash_timer = 0.0
+        self.archive_minor_spawn_timer = 0.0
         self.quest_stage = "intro"  # Ensure quest stage reset in _load_floor
         self.elevator_locked = True
 
@@ -93,9 +106,10 @@ class Game:
         self.font_dialog = self._load_font(20)
 
         self.current_floor = settings.START_FLOOR
-        self._load_floor(settings.MAP_FILES[self.current_floor])
+        self._load_floor(settings.MAP_FILES[self.current_floor], preserve_health=False)
 
-    def _load_floor(self, path: Path) -> None:
+    def _load_floor(self, path: Path, *, preserve_health: bool = True) -> None:
+        prev_health = float(getattr(self, "player_health", settings.PLAYER_MAX_HEALTH))
         self.map_data = load_map(path)
         self._base_collision_grid = [row[:] for row in self.map_data.collision_grid]
         self.map_surface = self._build_map_surface(self.map_data)
@@ -140,8 +154,13 @@ class Game:
         self.enemy_attack_fx = []
         self.player_hit_timer = 0.0
         self.player_health_max = settings.PLAYER_MAX_HEALTH
-        self.player_health = float(self.player_health_max)
-        self.player_dead = False
+        if preserve_health:
+            new_health = max(0.0, min(prev_health, float(self.player_health_max)))
+            self.player_health = new_health
+            self.player_dead = new_health <= 0.0
+        else:
+            self.player_health = float(self.player_health_max)
+            self.player_dead = False
         self.regen_cooldown = 0.0
         self.regen_active = False
         self.any_enemy_aggro = False
@@ -152,7 +171,23 @@ class Game:
         self.lab_barriers = []
         self.lab_npc_state = {}
         self.lab_branch = ""
+        self.archive_center = (0.0, 0.0)
+        self.archive_core_radius = 0.0
+        self.archive_warning_radius = 0.0
+        self.archive_boss: dict | None = None
+        self.archive_flags: dict[str, bool] = {}
         self.lab_surface = None
+        self.archive_boss = None
+        self.archive_flags = {}
+        self.archive_projectiles = []
+        self.archive_flash_sequence = []
+        self.archive_pulse_state = {}
+        self.archive_flash_active = False
+        self.archive_flash_step = 0
+        self.archive_flash_timer = 0.0
+        self.archive_minor_spawn_timer = 0.0
+        if self.archive_boss_sprite is None:
+            self.archive_boss_sprite = self._load_archive_boss_sprite()
         self.quest_stage = "intro"
         self.elevator_locked = True
         self.font_path = self._resolve_font()
@@ -236,7 +271,7 @@ class Game:
                     self._restart_to_menu()
                 elif event.key == pygame.K_F2:
                     self.current_floor = "F40"
-                    self._load_floor(settings.MAP_FILES[self.current_floor])
+                    self._load_floor(settings.MAP_FILES[self.current_floor], preserve_health=False)
                 return
             if self.dialog_lines:
                 if event.key in (pygame.K_SPACE, pygame.K_RETURN):
@@ -386,6 +421,11 @@ class Game:
         self.lab_barriers = []
         self.lab_npc_state = {}
         self.lab_branch = ""
+        self.archive_center = (0.0, 0.0)
+        self.archive_core_radius = 0.0
+        self.archive_warning_radius = 0.0
+        self.archive_boss: dict | None = None
+        self.archive_flags: dict[str, bool] = {}
         self.lab_surface = None
         if not self.map_data:
             return
@@ -395,12 +435,61 @@ class Game:
                     self.map_data.collision_grid[y] = row[:]  # restore base grid snapshot
         if self.current_floor == "F40":
             self._enter_floor_f40()
+        elif self.current_floor == "F35":
+            self._enter_floor_f35()
         else:
             self._enter_floor_default()
 
     def _enter_floor_default(self) -> None:
         if self.current_floor == "F50":
             self._set_quest_stage("intro")
+
+    def _enter_floor_f35(self) -> None:
+        if not self.map_data:
+            return
+        width, height = self.map_data.size_pixels
+        if not width or not height:
+            if self.map_surface:
+                w, h = self.map_surface.get_size()
+                width = w // max(1, settings.MAP_SCALE)
+                height = h // max(1, settings.MAP_SCALE)
+            else:
+                width = height = 0
+        self.archive_center = (width / 2.0, height / 2.0)
+        self.archive_core_radius = 120.0
+        self.archive_warning_radius = 220.0
+        self.archive_boss = None
+        self.archive_projectiles = []
+        self.archive_flash_sequence = []
+        self.archive_pulse_state = {
+            "timer": 4.0,
+            "interval": 5.0,
+            "warning": 1.6,
+            "duration": 1.0,
+            "phase": "idle",
+        }
+        self.archive_flash_active = False
+        self.archive_flash_step = 0
+        self.archive_flash_timer = 0.0
+        self.archive_minor_spawn_timer = 2.4
+        self.archive_flags = {
+            "intro_dialog_shown": False,
+            "hum_prompt_shown": False,
+            "boss_revealed": False,
+            "phase_two_started": False,
+            "phase_three_started": False,
+            "flash_started": False,
+            "flash_complete": False,
+            "exit_unlocked": False,
+            "log_available": False,
+            "pulse_cover_prompt": False,
+        }
+        self.combat_active = False
+        self._set_quest_stage("archive_intro")
+        self.floor_timers["archive_intro_delay"] = 0.6
+        self.floor_timers.pop("archive_hum_delay", None)
+        self.floor_timers.pop("archive_flash_delay", None)
+        self.elevator_locked = True
 
     def _enter_floor_f40(self) -> None:
         self._set_quest_stage("lab_intro")
@@ -416,6 +505,11 @@ class Game:
         self.lab_traps = []
         self.lab_barriers = []
         self.lab_branch = ""
+        self.archive_center = (0.0, 0.0)
+        self.archive_core_radius = 0.0
+        self.archive_warning_radius = 0.0
+        self.archive_boss: dict | None = None
+        self.archive_flags: dict[str, bool] = {}
         self.lab_npc_state = {}
         self._lab_init_traps()
         self._lab_refresh_surface()
@@ -578,6 +672,10 @@ class Game:
                     row[cx] = 0
 
     def _lab_trigger_trap(self, trap_id: str) -> None:
+        if trap_id == "trap1":
+            # Keep second-layer layout stable; skip the old path collapse.
+            self.floor_flags["lab_trap1_resolved"] = True
+            return
         for trap in self.lab_traps:
             if trap.get("id") == trap_id:
                 if trap.get("state") == "void":
@@ -663,6 +761,103 @@ class Game:
     def _draw_lab_environment(self) -> None:
         self._draw_lab_traps()
         self._draw_lab_barriers()
+
+    def _draw_archive_elements(self) -> None:
+        if self.archive_projectiles:
+            self._draw_archive_projectiles()
+        if self.archive_boss:
+            self._draw_archive_boss()
+        self._draw_archive_pulse_ring()
+        self._draw_archive_flash_overlay()
+
+    def _draw_archive_projectiles(self) -> None:
+        ox, oy = self.map_offset
+        for proj in self.archive_projectiles:
+            sx = int(proj.get("x", 0.0) + ox)
+            sy = int(proj.get("y", 0.0) + oy)
+            radius = int(proj.get("radius", 10))
+            color = proj.get("color", (90, 210, 255))
+            pygame.draw.circle(self.screen, color, (sx, sy), radius)
+
+    def _draw_archive_boss(self) -> None:
+        boss = self.archive_boss
+        if not boss:
+            return
+        ox, oy = self.map_offset
+        sx = int(boss.get("x", 0.0) + ox)
+        sy = int(boss.get("y", 0.0) + oy)
+        sprite = self.archive_boss_sprite
+        if sprite:
+            rect = sprite.get_rect(center=(sx, sy))
+            if boss.get("state") == "dying":
+                fade = max(0.0, min(1.0, boss.get("fade", 0.0)))
+                surf = sprite.copy()
+                surf.set_alpha(int(255 * fade))
+                self.screen.blit(surf, rect)
+            else:
+                self.screen.blit(sprite, rect)
+        else:
+            radius = int(boss.get("hit_radius", 80))
+            pygame.draw.circle(self.screen, (120, 180, 255), (sx, sy), radius)
+        flash = boss.get("flash", 0.0)
+        if flash > 0.0:
+            radius = int(boss.get("hit_radius", 80))
+            overlay = pygame.Surface((radius * 2, radius * 2), pygame.SRCALPHA)
+            alpha = int(140 * min(1.0, flash / 0.12))
+            pygame.draw.circle(overlay, (255, 255, 255, alpha), (radius, radius), radius)
+            self.screen.blit(overlay, (sx - radius, sy - radius))
+        self._draw_archive_boss_healthbar(boss, sx, sy)
+
+    def _draw_archive_boss_healthbar(self, boss: dict, sx: int, sy: int) -> None:
+        max_hp = float(boss.get("max_hp", 1.0))
+        hp = max(0.0, float(boss.get("hp", max_hp)))
+        if max_hp <= 0:
+            return
+        width = 360
+        height = 18
+        bar_x = settings.WINDOW_WIDTH // 2 - width // 2
+        bar_y = 50
+        pygame.draw.rect(self.screen, settings.ENEMY_HEALTH_BAR_BG, pygame.Rect(bar_x, bar_y, width, height))
+        if hp > 0:
+            ratio = max(0.0, min(1.0, hp / max_hp))
+            fill_rect = pygame.Rect(bar_x, bar_y, int(width * ratio), height)
+            pygame.draw.rect(self.screen, settings.ENEMY_HEALTH_BAR_COLOR, fill_rect)
+        pygame.draw.rect(self.screen, settings.ENEMY_HEALTH_BAR_BORDER, pygame.Rect(bar_x, bar_y, width, height), 2)
+        label = self.font_prompt.render("记忆吞噬者", True, settings.QUEST_TITLE)
+        label_rect = label.get_rect(center=(settings.WINDOW_WIDTH // 2, bar_y - 18))
+        self.screen.blit(label, label_rect)
+
+    def _draw_archive_pulse_ring(self) -> None:
+        if not self.archive_boss:
+            return
+        pulse = self.archive_pulse_state
+        phase = pulse.get("phase", "idle")
+        if phase not in {"warning", "firing"}:
+            return
+        ox, oy = self.map_offset
+        center = (int(self.archive_center[0] * settings.MAP_SCALE + ox), int(self.archive_center[1] * settings.MAP_SCALE + oy))
+        radius = int((self.archive_core_radius + 36.0) * settings.MAP_SCALE)
+        if phase == "warning":
+            color = (255, 120, 160)
+            width = 4
+        else:
+            color = (255, 60, 80)
+            width = 0
+        pygame.draw.circle(self.screen, color, center, radius, width)
+
+    def _draw_archive_flash_overlay(self) -> None:
+        active = self.archive_flash_active or bool(self.archive_flash_sequence)
+        if not active:
+            return
+        overlay = pygame.Surface((settings.WINDOW_WIDTH, settings.WINDOW_HEIGHT), pygame.SRCALPHA)
+        overlay.fill((200, 230, 255, 70 if self.archive_flash_active else 50))
+        self.screen.blit(overlay, (0, 0))
+        if self.archive_flash_sequence:
+            text = self.archive_flash_sequence[0].get("text", "")
+            if text:
+                surf = self.font_dialog.render(text, True, settings.TITLE_GLOW_COLOR)
+                rect = surf.get_rect(center=(settings.WINDOW_WIDTH // 2, settings.WINDOW_HEIGHT // 2))
+                self.screen.blit(surf, rect)
 
     def _player_map_pos(self) -> tuple[float, float]:
         return (
@@ -751,6 +946,396 @@ class Game:
     def _update_floor_logic(self, dt: float) -> None:
         if self.current_floor == "F40":
             self._update_floor_f40(dt)
+        elif self.current_floor == "F35":
+            self._update_floor_f35(dt)
+
+    def _update_floor_f35(self, dt: float) -> None:
+        if not self.map_data:
+            return
+        if not self.archive_flags.get("intro_dialog_shown"):
+            timer = self.floor_timers.get("archive_intro_delay", 0.0) - dt
+            if timer <= 0.0:
+                self.archive_flags["intro_dialog_shown"] = True
+                self.floor_timers.pop("archive_intro_delay", None)
+                self._show_dialog([
+                    "指引者：记忆档案馆。大量破损的记忆正在自我防卫。保持警戒，寻找中央控制核心。"
+                ], title="指引者")
+                self._set_quest_stage("archive_maze")
+            else:
+                self.floor_timers["archive_intro_delay"] = timer
+        px, py = self._player_map_pos()
+        center_x, center_y = self.archive_center
+        dx = px - center_x
+        dy = py - center_y
+        dist = math.hypot(dx, dy)
+        if (not self.archive_flags.get("hum_prompt_shown")) and dist <= self.archive_warning_radius:
+            self.archive_flags["hum_prompt_shown"] = True
+            self._show_dialog([
+                "你能听见吗？一种低沉的嗡鸣……就像记忆在胸腔里跳动。"
+            ], title="心跳般的噪声")
+        if not self.archive_flags.get("boss_revealed") and dist <= max(20.0, self.archive_core_radius + 8.0):
+            self.archive_flags["boss_revealed"] = True
+            self._archive_spawn_boss()
+            self._set_quest_stage("archive_boss")
+            self._show_dialog([
+                "指引者：核心显现！击毁它，防止记忆畸变蔓延。"
+            ], title="指引者")
+        if not self.archive_flags.get("boss_revealed"):
+            self.archive_minor_spawn_timer -= dt
+            if self.archive_minor_spawn_timer <= 0 and len(self.enemies) < 4:
+                if self._archive_spawn_wanderer():
+                    self.archive_minor_spawn_timer = random.uniform(4.0, 7.0)
+                else:
+                    self.archive_minor_spawn_timer = 5.0
+        self._archive_update_boss(dt)
+        self._archive_update_projectiles(dt)
+        self._archive_update_flashback(dt)
+        if self.archive_flags.get("boss_revealed") and not self.archive_boss and not self.archive_flags.get("flash_started"):
+            self.archive_flags["flash_started"] = True
+            self._archive_trigger_flashback()
+        if self.archive_flags.get("flash_complete") and not self.archive_flags.get("exit_unlocked"):
+            self.archive_flags["exit_unlocked"] = True
+            self._archive_unlock_exit()
+            self._set_quest_stage("archive_exit")
+        if self.archive_flags.get("exit_unlocked") and not self.archive_flags.get("log_available"):
+            self.archive_flags["log_available"] = True
+        if self.archive_boss:
+            self.any_enemy_aggro = True
+
+    def _archive_spawn_wanderer(self) -> bool:
+        if not self.map_data:
+            return False
+        width, height = self.map_data.size_pixels
+        if not width or not height:
+            return False
+        cell_size = self.map_data.cell_size
+        grid = self.map_data.collision_grid
+        for _ in range(12):
+            angle = random.uniform(0.0, math.tau)
+            radius = random.uniform(self.archive_core_radius + 40.0, max(self.archive_warning_radius + 30.0, self.archive_core_radius + 80.0))
+            px = self.archive_center[0] + math.cos(angle) * radius
+            py = self.archive_center[1] + math.sin(angle) * radius
+            if not (0 <= px < width and 0 <= py < height):
+                continue
+            gx = int(px // cell_size)
+            gy = int(py // cell_size)
+            if gy < 0 or gy >= len(grid) or gx < 0 or gx >= len(grid[0]):
+                continue
+            if grid[gy][gx] not in settings.PASSABLE_VALUES:
+                continue
+            spawn = {
+                "x": float(px * settings.MAP_SCALE),
+                "y": float(py * settings.MAP_SCALE),
+                "hp": 45.0,
+                "max_hp": 45.0,
+                "state": "idle",
+                "fade_timer": settings.ENEMY_FADE_DURATION,
+                "flash_timer": 0.0,
+                "aggro": False,
+                "show_health": 0.0,
+                "attack_timer": random.uniform(0.4, settings.ENEMY_ATTACK_COOLDOWN),
+                "attack_anim_timer": 0.0,
+                "color": (80, 200, 255),
+                "radius": 12,
+            }
+            self.enemies.append(spawn)
+            return True
+        return False
+
+    def _archive_spawn_boss(self) -> None:
+        center_x = self.archive_center[0] * settings.MAP_SCALE
+        center_y = self.archive_center[1] * settings.MAP_SCALE
+        self.archive_boss = {
+            "x": center_x,
+            "y": center_y,
+            "hp": 600.0,
+            "max_hp": 600.0,
+            "phase": 1,
+            "angle": 0.0,
+            "orbit": 38.0 * settings.MAP_SCALE / 3,
+            "fire_timer": 2.5,
+            "state": "active",
+            "hit_radius": 78.0,
+        }
+        self.combat_active = True
+        self.archive_pulse_state.update({
+            "timer": 5.5,
+            "phase": "idle",
+            "applied": False,
+        })
+
+    def _archive_spawn_support_minions(self) -> None:
+        if not self.map_data:
+            return
+        offsets = [(-90, 0), (90, 0)]
+        for ox, oy in offsets:
+            px = self.archive_center[0] + ox
+            py = self.archive_center[1] + oy
+            spawn = {
+                "x": float(px * settings.MAP_SCALE),
+                "y": float(py * settings.MAP_SCALE),
+                "hp": 70.0,
+                "max_hp": 70.0,
+                "state": "idle",
+                "fade_timer": settings.ENEMY_FADE_DURATION,
+                "flash_timer": 0.0,
+                "aggro": False,
+                "show_health": 0.0,
+                "attack_timer": random.uniform(0.3, settings.ENEMY_ATTACK_COOLDOWN),
+                "attack_anim_timer": 0.0,
+                "color": (120, 220, 255),
+                "radius": 14,
+            }
+            self.enemies.append(spawn)
+        if self.enemies:
+            self.combat_active = True
+
+    def _archive_update_boss(self, dt: float) -> None:
+        boss = self.archive_boss
+        if not boss:
+            return
+        flash_timer = boss.get("flash", 0.0)
+        if flash_timer > 0.0:
+            boss["flash"] = max(0.0, flash_timer - dt)
+        else:
+            boss.pop("flash", None)
+        if boss.get("state") == "dying":
+            fade = boss.get("fade", 1.2) - dt
+            if fade <= 0.0:
+                self.archive_boss = None
+            else:
+                boss["fade"] = fade
+            return
+        max_hp = boss.get("max_hp", 1.0)
+        hp = max(0.0, boss.get("hp", max_hp))
+        ratio = hp / max_hp if max_hp else 0.0
+        phase = boss.get("phase", 1)
+        if ratio <= 0.66 and phase < 2 and not self.archive_flags.get("phase_two_started"):
+            self.archive_flags["phase_two_started"] = True
+            boss["phase"] = 2
+            boss["fire_timer"] = min(boss.get("fire_timer", 3.5), 2.0)
+            self._show_dialog([
+                "指引者：它开始呼叫碎片援军，准备迎战！"
+            ], title="指引者")
+            self._archive_spawn_support_minions()
+        if ratio <= 0.33 and boss.get("phase", 1) < 3 and not self.archive_flags.get("phase_three_started"):
+            self.archive_flags["phase_three_started"] = True
+            boss["phase"] = 3
+            boss["fire_timer"] = min(boss.get("fire_timer", 2.5), 1.5)
+            self.archive_pulse_state.update({
+                "timer": 4.0,
+                "interval": 5.0,
+                "warning": 1.2,
+                "duration": 0.9,
+                "phase": "idle",
+                "applied": False,
+            })
+            self._show_dialog([
+                "指引者：红色脉冲即将覆盖全场！躲到档案架后面！"
+            ], title="警告")
+        angle = boss.get("angle", 0.0)
+        speed = 0.35 if boss.get("phase", 1) == 1 else (0.52 if boss.get("phase", 1) == 2 else 0.68)
+        angle = (angle + speed * dt) % math.tau
+        orbit = boss.get("orbit", 60.0)
+        center_x = self.archive_center[0] * settings.MAP_SCALE
+        center_y = self.archive_center[1] * settings.MAP_SCALE
+        boss["x"] = center_x + math.cos(angle) * orbit
+        boss["y"] = center_y + math.sin(angle) * orbit
+        boss["angle"] = angle
+        boss["fire_timer"] = max(0.0, boss.get("fire_timer", 0.0) - dt)
+        if boss["fire_timer"] <= 0.0:
+            px = self.player_rect.centerx
+            py = self.player_rect.centery
+            dir_angle = math.atan2(py - boss["y"], px - boss["x"])
+            phase = boss.get("phase", 1)
+            if phase == 1:
+                count = 3
+                spread = math.radians(20)
+                speed_px = 230.0
+                boss["fire_timer"] = 5.0
+            elif phase == 2:
+                count = 4
+                spread = math.radians(26)
+                speed_px = 260.0
+                boss["fire_timer"] = 4.0
+            else:
+                count = 5
+                spread = math.radians(32)
+                speed_px = 300.0
+                boss["fire_timer"] = 3.0
+            offsets = []
+            if count % 2 == 1:
+                half = count // 2
+                offsets = [i for i in range(-half, half + 1)]
+            else:
+                half = count // 2
+                offsets = [i for i in range(-half, half + 1) if i != 0]
+            for idx in offsets:
+                ang = dir_angle + idx * spread
+                vx = math.cos(ang) * speed_px
+                vy = math.sin(ang) * speed_px
+                self.archive_projectiles.append({
+                    "x": boss["x"],
+                    "y": boss["y"],
+                    "vx": vx,
+                    "vy": vy,
+                    "ttl": 3.5,
+                    "radius": 10,
+                    "color": (90, 210, 255),
+                    "damage": 18 if phase == 1 else (24 if phase == 2 else 30),
+                })
+        if boss.get("phase", 1) >= 3:
+            pulse = self.archive_pulse_state
+            pulse["timer"] = pulse.get("timer", 4.0) - dt
+            if pulse["phase"] == "idle" and pulse["timer"] <= 0.0:
+                pulse["phase"] = "warning"
+                pulse["timer"] = pulse.get("warning", 1.2)
+                pulse["applied"] = False
+            elif pulse["phase"] == "warning" and pulse["timer"] <= 0.0:
+                pulse["phase"] = "firing"
+                pulse["timer"] = pulse.get("duration", 0.9)
+            elif pulse["phase"] == "firing":
+                if not pulse.get("applied"):
+                    self._archive_apply_pulse_damage()
+                    pulse["applied"] = True
+                if pulse["timer"] <= 0.0:
+                    pulse["phase"] = "idle"
+                    pulse["timer"] = pulse.get("interval", 5.0)
+                    pulse["applied"] = False
+        if hp <= 0.0 and boss.get("state") != "dying":
+            boss["state"] = "dying"
+            boss["fade"] = 1.2
+            self._archive_on_boss_defeated()
+
+    def _archive_apply_pulse_damage(self) -> None:
+        px, py = self._player_map_pos()
+        dx = px - self.archive_center[0]
+        dy = py - self.archive_center[1]
+        dist = math.hypot(dx, dy)
+        safe_radius = self.archive_core_radius + 36.0
+        has_cover = self._archive_player_has_cover()
+        should_damage = dist <= safe_radius or not has_cover
+        if should_damage:
+            self._apply_player_damage(32.0)
+            self.player_hit_timer = max(self.player_hit_timer, 0.4)
+            if "pulse_cover_prompt" in self.archive_flags:
+                self.archive_flags.pop("pulse_cover_prompt", None)
+        else:
+            if not self.archive_flags.get("pulse_cover_prompt"):
+                self._show_dialog([
+                    "指引者：保持掩护，脉冲已偏转。"
+                ], title="指引者")
+                self.archive_flags["pulse_cover_prompt"] = True
+
+    def _archive_player_has_cover(self) -> bool:
+        if not self.map_data:
+            return False
+        grid = self.map_data.collision_grid
+        max_y = len(grid)
+        max_x = len(grid[0]) if max_y else 0
+        if not max_x or not max_y:
+            return False
+        cell_size = max(1, self.map_data.cell_size)
+        start_x = self.archive_center[0] / cell_size
+        start_y = self.archive_center[1] / cell_size
+        player_x, player_y = self._player_map_pos()
+        end_x = player_x / cell_size
+        end_y = player_y / cell_size
+        x0 = int(round(start_x))
+        y0 = int(round(start_y))
+        x1 = int(round(end_x))
+        y1 = int(round(end_y))
+        dx = abs(x1 - x0)
+        dy = -abs(y1 - y0)
+        sx = 1 if x0 < x1 else -1
+        sy = 1 if y0 < y1 else -1
+        err = dx + dy
+        x, y = x0, y0
+        while True:
+            if not (x == x0 and y == y0) and not (x == x1 and y == y1):
+                if 0 <= x < max_x and 0 <= y < max_y:
+                    cell = grid[y][x]
+                    if cell not in settings.PASSABLE_VALUES:
+                        return True
+            if x == x1 and y == y1:
+                break
+            e2 = 2 * err
+            if e2 >= dy:
+                err += dy
+                x += sx
+            if e2 <= dx:
+                err += dx
+                y += sy
+        return False
+
+    def _archive_update_projectiles(self, dt: float) -> None:
+        if not self.archive_projectiles:
+            return
+        next_proj: list[dict] = []
+        if not self.map_data:
+            self.archive_projectiles = []
+            return
+        grid = self.map_data.collision_grid
+        cell_px = self.map_data.cell_size * settings.MAP_SCALE
+        max_y = len(grid)
+        max_x = len(grid[0]) if max_y else 0
+        player_radius = max(settings.PLAYER_SIZE) * 0.5
+        for proj in self.archive_projectiles:
+            ttl = proj.get("ttl", 0.0) - dt
+            if ttl <= 0.0:
+                continue
+            proj["ttl"] = ttl
+            proj["x"] += proj.get("vx", 0.0) * dt
+            proj["y"] += proj.get("vy", 0.0) * dt
+            cx = int(proj["x"] // cell_px)
+            cy = int(proj["y"] // cell_px)
+            if cx < 0 or cy < 0 or cx >= max_x or cy >= max_y or grid[cy][cx] == 1:
+                continue
+            dx = proj["x"] - self.player_rect.centerx
+            dy = proj["y"] - self.player_rect.centery
+            radius = proj.get("radius", 10) + player_radius
+            if dx * dx + dy * dy <= radius * radius:
+                self._apply_player_damage(proj.get("damage", 16.0))
+                continue
+            next_proj.append(proj)
+        self.archive_projectiles = next_proj
+
+    def _archive_on_boss_defeated(self) -> None:
+        self.combat_active = bool(self.enemies)
+        self.archive_projectiles = []
+        self._show_dialog([
+            "记忆核心破碎，数据开始倒流……"
+        ], title="系统")
+
+    def _archive_trigger_flashback(self) -> None:
+        self.archive_flash_sequence = [
+            {"text": "《The Bicameral Mind Thesis》", "timer": 0.8},
+            {"text": "刺眼的车灯扑面而来，刹车声撕裂耳膜。", "timer": 0.8},
+            {"text": "无尽的黑暗与寂静。", "timer": 0.8},
+        ]
+        self.archive_flash_active = True
+        self.archive_flash_timer = 0.0
+        self._set_quest_stage("archive_flash")
+
+    def _archive_update_flashback(self, dt: float) -> None:
+        if not self.archive_flash_active and not self.archive_flash_sequence:
+            return
+        if self.archive_flash_sequence:
+            self.archive_flash_sequence[0]["timer"] -= dt
+            if self.archive_flash_sequence[0]["timer"] <= 0.0:
+                self.archive_flash_sequence.pop(0)
+        if not self.archive_flash_sequence and self.archive_flash_active:
+            self.archive_flash_active = False
+            self.archive_flags["flash_complete"] = True
+            self._show_dialog([
+                "指引者：高密度记忆洪流已被压制。忽略那些碎片——它们属于旧生。"
+            ], title="指引者")
+
+    def _archive_unlock_exit(self) -> None:
+        self.elevator_locked = False
+        self._show_dialog([
+            "指引者：北侧电梯已解锁，带上音频日志，我们继续前进。"
+        ], title="指引者")
 
     def _update_floor_f40(self, dt: float) -> None:
         if not self.map_data:
@@ -843,6 +1428,10 @@ class Game:
         self._show_dialog(lines, title="逻辑错误实体")
 
     def _lab_on_enemies_cleared(self) -> None:
+        if self.current_floor == "F35":
+            if not self.archive_boss:
+                self.combat_active = False
+            return
         npc_state = self.lab_npc_state.get("logic_error_entity")
         if self.lab_branch == "fight" and npc_state and npc_state.get("state") == "hostile":
             npc_state["state"] = "defeated"
@@ -877,6 +1466,8 @@ class Game:
             self.screen.blit(self.map_surface, self.map_offset)
         if self.current_floor == "F40":
             self._draw_lab_environment()
+        elif self.current_floor == "F35":
+            self._draw_archive_elements()
         self._draw_enemy_attack_fx()
         self._draw_enemies()
         self._draw_bullets()
@@ -906,6 +1497,43 @@ class Game:
             w, h = sprite.get_size()
             return pygame.transform.scale(sprite, (int(w * settings.PLAYER_SCALE), int(h * settings.PLAYER_SCALE)))
         return None
+
+    def _load_archive_boss_sprite(self) -> pygame.Surface | None:
+        path = getattr(settings, "ARCHIVE_BOSS_IMAGE", None)
+        if not path:
+            return None
+        if not isinstance(path, Path):
+            try:
+                path = Path(path)
+            except TypeError:
+                return None
+        if not path.exists():
+            return None
+        try:
+            sprite = pygame.image.load(str(path)).convert_alpha()
+        except Exception:
+            return None
+        sprite = self._apply_transparent_background(sprite)
+        if settings.MAP_SCALE != 1:
+            w, h = sprite.get_size()
+            scaled = pygame.transform.scale(sprite, (int(w * settings.MAP_SCALE), int(h * settings.MAP_SCALE)))
+            color_key = sprite.get_colorkey()
+            if color_key is not None:
+                scaled.set_colorkey(color_key)
+            return scaled
+        return sprite
+
+    def _apply_transparent_background(self, surface: pygame.Surface) -> pygame.Surface:
+        if not surface:
+            return surface
+        try:
+            corner = surface.get_at((0, 0))
+        except Exception:
+            return surface
+        if len(corner) == 4 and corner[3] == 0:
+            return surface
+        surface.set_colorkey(corner)
+        return surface
 
     def _load_player_walk_frames(self) -> list[pygame.Surface]:
         frames: list[pygame.Surface] = []
@@ -1189,6 +1817,16 @@ class Game:
                     hit_enemy["attack_anim_timer"] = 0.0
                 continue  # bullet consumed on hit
 
+            if self.archive_boss and self.archive_boss.get("state") != "dying":
+                dx_b = self.archive_boss.get("x", 0.0) - b["x"]
+                dy_b = self.archive_boss.get("y", 0.0) - b["y"]
+                radius = self.archive_boss.get("hit_radius", 78.0) + settings.GUN_BULLET_RADIUS
+                if dx_b * dx_b + dy_b * dy_b <= radius * radius:
+                    hp = max(0.0, float(self.archive_boss.get("hp", 0.0)) - settings.PLAYER_BULLET_DAMAGE)
+                    self.archive_boss["hp"] = hp
+                    self.archive_boss["flash"] = 0.12
+                    continue
+
             cx = int(b["x"] // cell_px)
             cy = int(b["y"] // cell_px)
             if cx < 0 or cy < 0 or cx >= max_x or cy >= max_y:
@@ -1226,7 +1864,7 @@ class Game:
     def _restart_to_menu(self) -> None:
         self.start_menu.reset()
         self.current_floor = settings.START_FLOOR
-        self._load_floor(settings.MAP_FILES[self.current_floor])
+        self._load_floor(settings.MAP_FILES[self.current_floor], preserve_health=False)
         self.in_menu = True
 
     def _start_frame_combat(self) -> None:
@@ -1762,6 +2400,8 @@ class Game:
                 return False
             if self.current_floor == "F40":
                 return self.quest_stage in {"lab_switch", "lab_exit"}
+            if self.current_floor == "F35":
+                return self.archive_flags.get("log_available", False)
             return self.quest_stage in {"log", "elevator"}
         if t == "frame":
             if self.combat_active:
@@ -1776,6 +2416,8 @@ class Game:
                 npc_state = self.lab_npc_state.get(trig.get("id", ), {})
                 return not npc_state.get("hostile", False)
             return True
+        if t == "exit" and self.current_floor == "F35":
+            return self.archive_flags.get("exit_unlocked", False)
         return True
 
     def _update_interaction_prompt(self) -> None:
@@ -1825,6 +2467,9 @@ class Game:
             if self.current_floor == "F50" and self.elevator_locked:
                 self._show_dialog(["这个电梯怎么开呢？"], title="提示")
                 return
+            if self.current_floor == "F35" and (self.elevator_locked or not self.archive_flags.get("exit_unlocked", False)):
+                self._show_dialog(["系统：档案核心仍未稳定，无法启动电梯。"], title="系统")
+                return
             next_floor = trig["to_floor"]
             if next_floor in settings.MAP_FILES:
                 self.current_floor = next_floor
@@ -1869,6 +2514,14 @@ class Game:
                 "受试体 \"Custodian\" 已相信首要任务为 \"拯救方舟\"。",
                 "生命体征：稳定。现实阻抗：0.2%。",
                 "继续推进第一阶段。",
+            ]
+        if term_id == "log_elara_audio":
+            return [
+                "[DR. ELARA AUDIO LOG]",
+                "The 'death memory' implant remains our sharpest anchor.",
+                "Sever the past, and the subject clings to the mission without question.",
+                "Yet in the quiet, I keep wondering what gentle memories we erased.",
+                "Who were they before the Ark demanded their purpose?",
             ]
         if term_id == "log_experiment_7g":
             return [
@@ -2000,6 +2653,16 @@ class Game:
             return ["任务：解锁电梯权限", "目标：与终端与开关交互"]
         if self.quest_stage == "lab_exit":
             return ["任务：前往记忆档案馆", "目标：乘坐电梯离开感官实验室"]
+        if self.quest_stage == "archive_intro":
+            return ["任务：等待指引者解析环境"]
+        if self.quest_stage == "archive_maze":
+            return ["任务：抵达档案馆核心", "目标：循着嗡鸣找到空地"]
+        if self.quest_stage == "archive_boss":
+            return ["任务：击败记忆吞噬者", "提示：注意脉冲，利用档案架掩护"]
+        if self.quest_stage == "archive_flash":
+            return ["任务：稳定认知", "提示：让记忆风暴自行散去"]
+        if self.quest_stage == "archive_exit":
+            return ["任务：收集残余日志", "目标：前往北侧电梯"]
         return []
 
     def _draw_player_health_hud(self) -> pygame.Rect:

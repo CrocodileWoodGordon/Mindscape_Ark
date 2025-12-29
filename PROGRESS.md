@@ -11,12 +11,12 @@
 - Developed the Sensory Lab (Floor 40): abstract collision rendering, trap cycles, energy barriers, fight/bypass branching logic, NPC state machine, branch-tailored enemy spawns, quest progression, and switch-controlled elevator unlock.
 - Polished UI/feedback: quest HUD, minimap, health/ammo/reload display, player hit flash, and debug coordinate readout.
 - Hardened the resource pipeline: NotoSansSC font preference, optional `boot_glitch.wav`, walk-cycle animation, and map loader improvements.
+- Constructed the Memory Archive (Floor 35): maze collision + map image, ambient anomaly spawns, multi-phase boss encounter, flashback sequence, and elevator/log gating into Floor 30.
 
 ## In Progress
-- Floor 40 exit currently targets a placeholder Floor 35; the map, encounters, and narrative beats are not yet implemented.
 - Save system hooks are reserved via `data/saves` but persistence is not wired up.
 
 ## Next Up
-- Author the Floor 35 map JSON, narrative flow, and elevator linkage.
+- Plan the Logic Core (Floor 30) encounter stack and content pipeline.
 - Extend the combat sandbox with additional weapons, achievements, and enemy archetypes.
 - Broaden audio/visual polish and run performance profiling before scaling to deeper floors.
