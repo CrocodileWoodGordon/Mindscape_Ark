@@ -80,6 +80,54 @@ GUN_BULLET_RADIUS = 3
 GUN_BULLET_COLOR = (255, 235, 120)
 PLAYER_BULLET_DAMAGE = 24
 
+# Weapon definitions (per-weapon tuning)
+WEAPON_SLOTS = ("sidearm", "entropy_rifle", "scattergun")
+DEFAULT_WEAPON = "sidearm"
+WEAPON_DEFS = {
+    "sidearm": {
+        "clip_size": GUN_CLIP_SIZE,
+        "fire_cooldown": GUN_FIRE_COOLDOWN,
+        "reload_time": GUN_RELOAD_TIME,
+        "bullet_speed": GUN_BULLET_SPEED,
+        "bullet_lifetime": GUN_BULLET_LIFETIME,
+        "bullet_radius": GUN_BULLET_RADIUS,
+        "bullet_color": GUN_BULLET_COLOR,
+        "damage": PLAYER_BULLET_DAMAGE,
+        "pellets": 1,
+        "spread_deg": 1.2,
+        "auto_fire": False,
+    },
+    "entropy_rifle": {
+        "clip_size": 18,
+        "fire_cooldown": 0.12,
+        "reload_time": 1.15,
+        "bullet_speed": 620,
+        "bullet_lifetime": 1.4,
+        "bullet_radius": 3,
+        "bullet_color": (170, 230, 255),
+        "damage": 20,
+        "pellets": 1,
+        "spread_deg": 3.0,
+        "auto_fire": True,
+    },
+    "scattergun": {
+        "clip_size": 6,
+        "fire_cooldown": 0.62,
+        "reload_time": 1.4,
+        "bullet_speed": 470,
+        "bullet_lifetime": 1.1,
+        "bullet_radius": 2,
+        "bullet_color": (255, 200, 160),
+        "damage": 14,
+        "pellets": 5,
+        "spread_deg": 12.0,
+        "auto_fire": False,
+    },
+}
+
+# Boss tuning
+BOSS_HP_SCALE_WITH_RIFLE = 3
+
 # Enemies (tutorial placeholders)
 ENEMY_COLOR = (255, 120, 140)
 ENEMY_RADIUS = 14

@@ -55,7 +55,11 @@ class Game:
         self.bullets: list[dict] = []
         self.enemies: list[dict] = []
         self.combat_active = False
-        self.ammo_in_clip = settings.GUN_CLIP_SIZE
+        self.weapon_slots = list(settings.WEAPON_SLOTS)
+        self.unlocked_weapons: set[str] = {settings.DEFAULT_WEAPON}
+        self.current_weapon = settings.DEFAULT_WEAPON
+        self.weapon_ammo: dict[str, int] = {}
+        self._prime_weapon_ammo(reset_all=True)
         self.reload_timer = 0.0
         self.fire_cooldown = 0.0
         self.interact_mask: pygame.Surface | None = None
@@ -157,7 +161,7 @@ class Game:
         self.bullets.clear()
         self.enemies.clear()
         self.combat_active = False
-        self.ammo_in_clip = settings.GUN_CLIP_SIZE
+        self._prime_weapon_ammo(reset_all=True)
         self.reload_timer = 0.0
         self.fire_cooldown = 0.0
         self.dialog_title = ""
@@ -314,6 +318,17 @@ class Game:
                 if event.key in (pygame.K_SPACE, pygame.K_RETURN):
                     self._dismiss_dialog()
                 return
+            if event.key in (pygame.K_1, pygame.K_2, pygame.K_3, pygame.K_KP1, pygame.K_KP2, pygame.K_KP3):
+                slot_map = {
+                    pygame.K_1: 0,
+                    pygame.K_2: 1,
+                    pygame.K_3: 2,
+                    pygame.K_KP1: 0,
+                    pygame.K_KP2: 1,
+                    pygame.K_KP3: 2,
+                }
+                self._switch_weapon_slot(slot_map[event.key])
+                return
             if event.key == pygame.K_F2:
                 # Quick swap to Floor40 for testing
                 self.current_floor = "F40"
@@ -406,6 +421,12 @@ class Game:
             moved = self._follow_path(dt)
 
         self._update_player_animation(moved, dt)
+        if self._current_weapon_config().get("auto_fire"):
+            mouse_buttons = pygame.mouse.get_pressed(3)
+            mouse_held = mouse_buttons[0] if mouse_buttons else False
+            space_held = keys[pygame.K_SPACE] if pygame.K_SPACE < len(keys) else False
+            if mouse_held or space_held:
+                self._try_fire()
 
         self._update_bullets(dt)
         self._update_enemies(dt)
@@ -572,6 +593,9 @@ class Game:
             else:
                 width = height = 0
         center = (width / 2.0, height / 2.0)
+        base_hp = 280.0
+        if self._rifle_unlocked():
+            base_hp *= settings.BOSS_HP_SCALE_WITH_RIFLE
         self.resonator_state = {
             "intro_timer": 0.6,
             "intro_shown": False,
@@ -580,8 +604,8 @@ class Game:
             "npc_spoken": 0,
             "buff_awarded": bool(getattr(self, "speed_bonus", 1.0) > 1.0),
             "boss_state": "dormant",
-            "boss_hp": 280.0,
-            "boss_max_hp": 280.0,
+            "boss_hp": base_hp,
+            "boss_max_hp": base_hp,
             "boss_phase": 0,
             "boss_fire_timer": 2.4,
             "boss_flash": 0.0,
@@ -957,17 +981,17 @@ class Game:
         overlay.fill((10, 12, 20, 180))
         self.screen.blit(overlay, (0, 0))
         panel_width = 460
-        panel_height = 320
+        panel_height = 360
         panel = pygame.Surface((panel_width, panel_height), pygame.SRCALPHA)
         panel.fill((24, 30, 42, 235))
         px = (settings.WINDOW_WIDTH - panel_width) // 2
         py = (settings.WINDOW_HEIGHT - panel_height) // 2
         self.screen.blit(panel, (px, py))
-        title = self.font_dialog.render("DEBUG: 跳转楼层", True, settings.QUEST_TITLE)
+        title = self.font_dialog.render("DEBUG: 选项", True, settings.QUEST_TITLE)
         self.screen.blit(title, (px + (panel_width - title.get_width()) // 2, py + 18))
         options = self.debug_menu_options
         if not options:
-            empty = self.font_prompt.render("无可用楼层", True, settings.QUEST_TEXT)
+            empty = self.font_prompt.render("无可用选项", True, settings.QUEST_TEXT)
             self.screen.blit(empty, (px + (panel_width - empty.get_width()) // 2, py + 90))
         else:
             start_y = py + 84
@@ -1274,13 +1298,15 @@ class Game:
             return
         if self.logic_flags.get("weapon_claimed"):
             self._show_dialog([
-                "提示：熵增步枪已添加（占位）。"
+                "提示：熵增步枪已解锁。"
             ], title="提示")
             return
         self.logic_flags["weapon_claimed"] = True
+        for weapon_id in settings.WEAPON_SLOTS[1:]:
+            self._unlock_weapon(weapon_id)
         self._show_dialog([
-            "获得武器：熵增步枪（占位）。",
-            "指引者：记录完成，加强火力。"
+            "获得武器：熵增步枪。",
+            "提示：按数字键 1-3 切换武器。"
         ], title="系统")
 
     def _handle_logic_switch(self, trig: dict) -> None:
@@ -1322,6 +1348,7 @@ class Game:
         options: list[tuple[str, str]] = []
         for code in settings.MAP_FILES.keys():
             options.append((code, label_map.get(code, f"{code}")))
+        options.append(("WEAP", "获得武器（解锁全部）"))
         return options
 
     def _handle_debug_menu_event(self, event: pygame.event.Event) -> bool:
@@ -1340,22 +1367,38 @@ class Game:
                 return True
             if key in (pygame.K_RETURN, pygame.K_KP_ENTER):
                 if self.debug_menu_options:
-                    floor_code = self.debug_menu_options[self.debug_menu_index][0]
-                    self._debug_warp_to_floor(floor_code)
+                    option_code = self.debug_menu_options[self.debug_menu_index][0]
+                    self._debug_activate_option(option_code)
                 return True
         elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
             if self.debug_menu_options:
-                px = (settings.WINDOW_WIDTH - 460) // 2 + 48
-                py = (settings.WINDOW_HEIGHT - 320) // 2 + 84
+                panel_width = 460
+                panel_height = 360
+                px = (settings.WINDOW_WIDTH - panel_width) // 2 + 48
+                py = (settings.WINDOW_HEIGHT - panel_height) // 2 + 84
                 line_height = 36
                 mx, my = event.pos
                 if px - 8 <= mx <= px - 8 + 364:
                     idx = (my - py) // line_height
                     if 0 <= idx < len(self.debug_menu_options):
                         self.debug_menu_index = idx
-                        self._debug_warp_to_floor(self.debug_menu_options[self.debug_menu_index][0])
+                        self._debug_activate_option(self.debug_menu_options[self.debug_menu_index][0])
                         return True
+        elif event.type == pygame.MOUSEWHEEL:
+            if self.debug_menu_options and event.y:
+                delta = -1 if event.y > 0 else 1
+                self.debug_menu_index = (self.debug_menu_index + delta) % len(self.debug_menu_options)
+                return True
         return False
+
+    def _debug_activate_option(self, option_code: str) -> None:
+        if option_code in settings.MAP_FILES:
+            self._debug_warp_to_floor(option_code)
+            return
+        if option_code == "WEAP":
+            self._debug_unlock_weapons()
+            return
+        self._show_dialog(["DEBUG：未识别选项。"], title="调试")
 
     def _debug_warp_to_floor(self, floor_code: str) -> None:
         map_path = settings.MAP_FILES.get(floor_code)
@@ -1367,6 +1410,14 @@ class Game:
         self.debug_menu_active = False
         self._show_dialog([f"DEBUG：跳转到 {floor_code}."], title="调试")
 
+    def _debug_unlock_weapons(self) -> None:
+        for weapon_id in settings.WEAPON_SLOTS:
+            self._unlock_weapon(weapon_id)
+        self._prime_weapon_ammo(reset_all=False)
+        self.logic_flags["weapon_ready"] = True
+        self.logic_flags["weapon_claimed"] = True
+        self.debug_menu_active = False
+        self._show_dialog(["DEBUG：已解锁全部武器。"], title="调试")
 
     def _update_floor_f35(self, dt: float) -> None:
         if not self.map_data:
@@ -1464,11 +1515,14 @@ class Game:
     def _archive_spawn_boss(self) -> None:
         center_x = self.archive_center[0] * settings.MAP_SCALE
         center_y = self.archive_center[1] * settings.MAP_SCALE
+        base_hp = 600.0
+        if self._rifle_unlocked():
+            base_hp *= settings.BOSS_HP_SCALE_WITH_RIFLE
         self.archive_boss = {
             "x": center_x,
             "y": center_y,
-            "hp": 600.0,
-            "max_hp": 600.0,
+            "hp": base_hp,
+            "max_hp": base_hp,
             "phase": 1,
             "angle": 0.0,
             "orbit": 38.0 * settings.MAP_SCALE / 3,
@@ -2577,12 +2631,61 @@ class Game:
         dy = int(round(vy * speed))
         return dx, dy
 
+    def _weapon_config(self, weapon_id: str) -> dict:
+        return settings.WEAPON_DEFS.get(weapon_id, settings.WEAPON_DEFS[settings.DEFAULT_WEAPON])
+
+    def _current_weapon_config(self) -> dict:
+        return self._weapon_config(self.current_weapon)
+
+    def _rifle_unlocked(self) -> bool:
+        return "entropy_rifle" in self.unlocked_weapons
+
+    def _weapon_clip_size(self, weapon_id: str) -> int:
+        return int(self._weapon_config(weapon_id).get("clip_size", settings.GUN_CLIP_SIZE))
+
+    def _prime_weapon_ammo(self, *, reset_all: bool = False) -> None:
+        if reset_all:
+            self.weapon_ammo = {}
+        for weapon_id in self.unlocked_weapons:
+            self.weapon_ammo.setdefault(weapon_id, self._weapon_clip_size(weapon_id))
+        if self.current_weapon not in self.unlocked_weapons:
+            self.current_weapon = settings.DEFAULT_WEAPON
+            self.unlocked_weapons.add(self.current_weapon)
+        clip_size = self._weapon_clip_size(self.current_weapon)
+        if reset_all:
+            self.weapon_ammo[self.current_weapon] = clip_size
+        stored = int(self.weapon_ammo.get(self.current_weapon, clip_size))
+        self.ammo_in_clip = max(0, min(clip_size, stored))
+
+    def _unlock_weapon(self, weapon_id: str) -> None:
+        if weapon_id in self.unlocked_weapons:
+            return
+        self.unlocked_weapons.add(weapon_id)
+        self.weapon_ammo.setdefault(weapon_id, self._weapon_clip_size(weapon_id))
+
+    def _switch_weapon_slot(self, slot_index: int) -> None:
+        if slot_index < 0 or slot_index >= len(self.weapon_slots):
+            return
+        weapon_id = self.weapon_slots[slot_index]
+        if weapon_id not in self.unlocked_weapons:
+            return
+        if weapon_id == self.current_weapon:
+            return
+        self.weapon_ammo[self.current_weapon] = max(0, int(self.ammo_in_clip))
+        self.reload_timer = 0.0
+        self.current_weapon = weapon_id
+        clip_size = self._weapon_clip_size(weapon_id)
+        self.weapon_ammo.setdefault(weapon_id, clip_size)
+        self.ammo_in_clip = max(0, min(clip_size, self.weapon_ammo[weapon_id]))
+
     def _start_reload(self) -> None:
         if self.reload_timer > 0:
             return
-        if self.ammo_in_clip >= settings.GUN_CLIP_SIZE:
+        clip_size = self._weapon_clip_size(self.current_weapon)
+        if self.ammo_in_clip >= clip_size:
             return
-        self.reload_timer = settings.GUN_RELOAD_TIME
+        reload_time = float(self._current_weapon_config().get("reload_time", settings.GUN_RELOAD_TIME))
+        self.reload_timer = reload_time
 
     def _try_fire(self) -> None:
         if not self.map_data or self.player_dead:
@@ -2602,20 +2705,33 @@ class Game:
         dist = (dir_x * dir_x + dir_y * dir_y) ** 0.5
         if dist == 0:
             return
-        norm_x = dir_x / dist
-        norm_y = dir_y / dist
-        speed = settings.GUN_BULLET_SPEED
-        vx = norm_x * speed
-        vy = norm_y * speed
-        self.bullets.append({
-            "x": float(px),
-            "y": float(py),
-            "vx": vx,
-            "vy": vy,
-            "ttl": settings.GUN_BULLET_LIFETIME,
-        })
+        base_angle = math.atan2(dir_y, dir_x)
+        weapon_cfg = self._current_weapon_config()
+        speed = float(weapon_cfg.get("bullet_speed", settings.GUN_BULLET_SPEED))
+        pellets = max(1, int(weapon_cfg.get("pellets", 1)))
+        spread_deg = float(weapon_cfg.get("spread_deg", 0.0))
+        spread_rad = math.radians(spread_deg)
+        ttl = float(weapon_cfg.get("bullet_lifetime", settings.GUN_BULLET_LIFETIME))
+        radius = int(weapon_cfg.get("bullet_radius", settings.GUN_BULLET_RADIUS))
+        color = weapon_cfg.get("bullet_color", settings.GUN_BULLET_COLOR)
+        damage = float(weapon_cfg.get("damage", settings.PLAYER_BULLET_DAMAGE))
+        for _ in range(pellets):
+            angle = base_angle + random.uniform(-spread_rad, spread_rad)
+            vx = math.cos(angle) * speed
+            vy = math.sin(angle) * speed
+            self.bullets.append({
+                "x": float(px),
+                "y": float(py),
+                "vx": vx,
+                "vy": vy,
+                "ttl": ttl,
+                "radius": radius,
+                "color": color,
+                "damage": damage,
+            })
         self.ammo_in_clip -= 1
-        self.fire_cooldown = settings.GUN_FIRE_COOLDOWN
+        self.weapon_ammo[self.current_weapon] = self.ammo_in_clip
+        self.fire_cooldown = float(weapon_cfg.get("fire_cooldown", settings.GUN_FIRE_COOLDOWN))
         if self.ammo_in_clip <= 0:
             self._start_reload()
 
@@ -2627,7 +2743,9 @@ class Game:
         if self.reload_timer > 0:
             self.reload_timer = max(0.0, self.reload_timer - dt)
             if self.reload_timer == 0.0:
-                self.ammo_in_clip = settings.GUN_CLIP_SIZE
+                clip_size = self._weapon_clip_size(self.current_weapon)
+                self.ammo_in_clip = clip_size
+                self.weapon_ammo[self.current_weapon] = clip_size
         cell_px = self.map_data.cell_size * settings.MAP_SCALE
         max_y = len(self.map_data.collision_grid)
         max_x = len(self.map_data.collision_grid[0]) if max_y else 0
@@ -2640,7 +2758,8 @@ class Game:
             b["y"] += b["vy"] * dt
             # enemy hit check
             hit_enemy = None
-            hit_radius_sq = (settings.ENEMY_RADIUS + settings.GUN_BULLET_RADIUS) ** 2
+            bullet_radius = float(b.get("radius", settings.GUN_BULLET_RADIUS))
+            hit_radius_sq = (settings.ENEMY_RADIUS + bullet_radius) ** 2
             for enemy in self.enemies:
                 if enemy.get("state") == "dying":
                     continue
@@ -2652,7 +2771,8 @@ class Game:
             if hit_enemy:
                 max_hp = float(hit_enemy.get("max_hp", settings.ENEMY_MAX_HEALTH))
                 current_hp = float(hit_enemy.get("hp", max_hp))
-                current_hp = max(0.0, current_hp - settings.PLAYER_BULLET_DAMAGE)
+                damage = float(b.get("damage", settings.PLAYER_BULLET_DAMAGE))
+                current_hp = max(0.0, current_hp - damage)
                 hit_enemy["hp"] = current_hp
                 hit_enemy["max_hp"] = max_hp
                 hit_enemy["flash_timer"] = settings.ENEMY_HIT_FLASH_TIME
@@ -2669,9 +2789,10 @@ class Game:
             if self.archive_boss and self.archive_boss.get("state") != "dying":
                 dx_b = self.archive_boss.get("x", 0.0) - b["x"]
                 dy_b = self.archive_boss.get("y", 0.0) - b["y"]
-                radius = self.archive_boss.get("hit_radius", 78.0) + settings.GUN_BULLET_RADIUS
+                radius = self.archive_boss.get("hit_radius", 78.0) + bullet_radius
                 if dx_b * dx_b + dy_b * dy_b <= radius * radius:
-                    hp = max(0.0, float(self.archive_boss.get("hp", 0.0)) - settings.PLAYER_BULLET_DAMAGE)
+                    damage = float(b.get("damage", settings.PLAYER_BULLET_DAMAGE))
+                    hp = max(0.0, float(self.archive_boss.get("hp", 0.0)) - damage)
                     self.archive_boss["hp"] = hp
                     self.archive_boss["flash"] = 0.12
                     continue
@@ -2687,11 +2808,12 @@ class Game:
                     hit_radius = 30.0
                 dx_b = cx - b["x"]
                 dy_b = cy - b["y"]
-                radius = hit_radius + settings.GUN_BULLET_RADIUS
+                radius = hit_radius + bullet_radius
                 if dx_b * dx_b + dy_b * dy_b <= radius * radius:
                     if self.resonator_state.get("boss_state") == "dormant":
                         self._resonator_start_boss()
-                    hp = max(0.0, float(self.resonator_state.get("boss_hp", 0.0)) - settings.PLAYER_BULLET_DAMAGE)
+                    damage = float(b.get("damage", settings.PLAYER_BULLET_DAMAGE))
+                    hp = max(0.0, float(self.resonator_state.get("boss_hp", 0.0)) - damage)
                     self.resonator_state["boss_hp"] = hp
                     self.resonator_state["boss_flash"] = 0.12
                     continue
@@ -2732,6 +2854,8 @@ class Game:
 
     def _restart_to_menu(self) -> None:
         self.start_menu.reset()
+        self.unlocked_weapons = {settings.DEFAULT_WEAPON}
+        self.current_weapon = settings.DEFAULT_WEAPON
         self.current_floor = settings.START_FLOOR
         self._load_floor(settings.MAP_FILES[self.current_floor], preserve_health=False)
         self.in_menu = True
@@ -3161,12 +3285,12 @@ class Game:
     def _draw_bullets(self) -> None:
         if not self.bullets:
             return
-        r = settings.GUN_BULLET_RADIUS
-        color = settings.GUN_BULLET_COLOR
         ox, oy = self.map_offset
         for b in self.bullets:
             sx = int(b["x"] + ox)
             sy = int(b["y"] + oy)
+            r = int(b.get("radius", settings.GUN_BULLET_RADIUS))
+            color = b.get("color", settings.GUN_BULLET_COLOR)
             pygame.draw.circle(self.screen, color, (sx, sy), r)
 
     def _follow_path(self, dt: float) -> bool:
@@ -3620,12 +3744,13 @@ class Game:
         return bg_rect
 
     def _draw_ammo_hud(self, avoid_rect: pygame.Rect | None = None) -> pygame.Rect:
-        total = settings.GUN_CLIP_SIZE
+        weapon_cfg = self._current_weapon_config()
+        total = int(weapon_cfg.get("clip_size", settings.GUN_CLIP_SIZE))
         filled = max(0, min(total, self.ammo_in_clip))
         size = 12
         gap = 4
         margin = 12
-        color_on = settings.GUN_BULLET_COLOR
+        color_on = weapon_cfg.get("bullet_color", settings.GUN_BULLET_COLOR)
         color_off = (70, 80, 90)
         x = settings.WINDOW_WIDTH - margin - total * (size + gap) + gap
         y = margin
@@ -3645,6 +3770,7 @@ class Game:
     def _draw_reload_bar(self, ammo_rect: pygame.Rect | None = None) -> None:
         if self.reload_timer <= 0:
             return
+        weapon_cfg = self._current_weapon_config()
         margin = 12
         width = 180
         height = 10
@@ -3654,10 +3780,15 @@ class Game:
             y = max(y, ammo_rect.bottom + 6)
         bg_rect = pygame.Rect(x, y, width, height)
         pygame.draw.rect(self.screen, (50, 60, 70), bg_rect, border_radius=3)
-        progress = 1.0 - min(1.0, self.reload_timer / settings.GUN_RELOAD_TIME)
+        reload_time = float(weapon_cfg.get("reload_time", settings.GUN_RELOAD_TIME))
+        if reload_time > 0:
+            progress = 1.0 - min(1.0, self.reload_timer / reload_time)
+        else:
+            progress = 1.0
         if progress > 0:
             fill_rect = pygame.Rect(x, y, int(width * progress), height)
-            pygame.draw.rect(self.screen, settings.GUN_BULLET_COLOR, fill_rect, border_radius=3)
+            color = weapon_cfg.get("bullet_color", settings.GUN_BULLET_COLOR)
+            pygame.draw.rect(self.screen, color, fill_rect, border_radius=3)
         pygame.draw.rect(self.screen, (150, 160, 180), bg_rect, width=1, border_radius=3)
 
     def _start_click_feedback(self, map_x: int, map_y: int) -> None:
