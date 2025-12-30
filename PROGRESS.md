@@ -12,11 +12,12 @@
 - Polished UI/feedback: quest HUD, minimap, health/ammo/reload display, player hit flash, and debug coordinate readout.
 - Hardened the resource pipeline: NotoSansSC font preference, optional `boot_glitch.wav`, walk-cycle animation, and map loader improvements.
 - Constructed the Memory Archive (Floor 35): maze collision + map image, ambient anomaly spawns, multi-phase boss encounter, flashback sequence, and elevator/log gating into Floor 30.
+- Engineered the Logic Core (Floor 30): relay-sequencing puzzle, UI glitch vignette, failure feedback damage, weapon cache reward, ethics log gating, and elevator unlock toward Floor 25.
 
 ## In Progress
 - Save system hooks are reserved via `data/saves` but persistence is not wired up.
 
 ## Next Up
-- Plan the Logic Core (Floor 30) encounter stack and content pipeline.
+- Outline the Pathos Resonator (Floor 25) emotional trials and encounter flow.
 - Extend the combat sandbox with additional weapons, achievements, and enemy archetypes.
 - Broaden audio/visual polish and run performance profiling before scaling to deeper floors.

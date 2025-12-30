@@ -41,6 +41,8 @@ class Game:
         self.path: list[tuple[int, int]] = []  # list of map-cell nodes
         self.path_target: tuple[int, int] | None = None
         self.path_goal_cell: tuple[int, int] | None = None
+        self.player_move_speed = float(settings.PLAYER_SPEED)
+        self.speed_bonus = 1.0
         self.interaction_target: dict | None = None
         self.dialog_lines: list[str] = []
         self.dialog_timer: float = 0.0
@@ -98,6 +100,20 @@ class Game:
         self.archive_flash_step = 0
         self.archive_flash_timer = 0.0
         self.archive_minor_spawn_timer = 0.0
+        self.resonator_assets: dict[str, pygame.Surface] = {}
+        self.resonator_state: dict[str, object] = {}
+        self.resonator_projectiles: list[dict] = []
+        self.logic_flags: dict[str, bool] = {}
+        self.logic_sequence: list[str] = []
+        self.logic_progress: list[str] = []
+        self.logic_glitch_timer = 0.0
+        self.logic_overlay_timer = 0.0
+        self.logic_overlay_text = ""
+        self.logic_relay_positions: dict[str, tuple[float, float]] = {}
+        self.debug_press_times: list[float] = []
+        self.debug_menu_active = False
+        self.debug_menu_options: list[tuple[str, str]] = []
+        self.debug_menu_index = 0
         self.quest_stage = "intro"  # Ensure quest stage reset in _load_floor
         self.elevator_locked = True
 
@@ -111,6 +127,10 @@ class Game:
     def _load_floor(self, path: Path, *, preserve_health: bool = True) -> None:
         prev_health = float(getattr(self, "player_health", settings.PLAYER_MAX_HEALTH))
         self.map_data = load_map(path)
+        self.debug_menu_active = False
+        self.debug_press_times.clear()
+        self.debug_menu_options = []
+        self.debug_menu_index = 0
         self._base_collision_grid = [row[:] for row in self.map_data.collision_grid]
         self.map_surface = self._build_map_surface(self.map_data)
         map_w, map_h = self.map_surface.get_size()
@@ -121,6 +141,7 @@ class Game:
         spawn_x, spawn_y = self.map_data.spawn_player
         # spawn is in pixels relative to map; scale to render space
         self.player_rect.center = (int(spawn_x * settings.MAP_SCALE), int(spawn_y * settings.MAP_SCALE))
+        self.player_move_speed = float(settings.PLAYER_SPEED) * float(getattr(self, "speed_bonus", 1.0))
         self.path = []
         self.path_target = None
         self.path_goal_cell = None
@@ -180,6 +201,8 @@ class Game:
         self.archive_boss = None
         self.archive_flags = {}
         self.archive_projectiles = []
+        self.resonator_projectiles = []
+        self.resonator_state = {}
         self.archive_flash_sequence = []
         self.archive_pulse_state = {}
         self.archive_flash_active = False
@@ -188,6 +211,13 @@ class Game:
         self.archive_minor_spawn_timer = 0.0
         if self.archive_boss_sprite is None:
             self.archive_boss_sprite = self._load_archive_boss_sprite()
+        self.logic_flags = {}
+        self.logic_sequence = []
+        self.logic_progress = []
+        self.logic_glitch_timer = 0.0
+        self.logic_overlay_timer = 0.0
+        self.logic_overlay_text = ""
+        self.logic_relay_positions = {}
         self.quest_stage = "intro"
         self.elevator_locked = True
         self.font_path = self._resolve_font()
@@ -262,7 +292,14 @@ class Game:
             if event.type in (pygame.KEYDOWN, pygame.MOUSEBUTTONDOWN):
                 self._advance_cutscene()
             return
+        if self.debug_menu_active:
+            self._handle_debug_menu_event(event)
+            return
         if event.type == pygame.KEYDOWN:
+            if event.key == pygame.K_BACKQUOTE and not self.debug_menu_active:
+                self._register_debug_keypress()
+                if self.debug_menu_active:
+                    return
             if event.key == pygame.K_ESCAPE:
                 self.running = False
                 return
@@ -336,6 +373,10 @@ class Game:
 
     def _update_play(self, dt: float) -> None:  # noqa: ARG002
         if not self.map_data:
+            return
+        if self.debug_menu_active:
+            self.interaction_target = None
+            self._update_camera()
             return
         if self.dialog_lines:
             self.interaction_target = None
@@ -437,6 +478,10 @@ class Game:
             self._enter_floor_f40()
         elif self.current_floor == "F35":
             self._enter_floor_f35()
+        elif self.current_floor == "F30":
+            self._enter_floor_f30()
+        elif self.current_floor == "F25":
+            self._enter_floor_f25()
         else:
             self._enter_floor_default()
 
@@ -490,6 +535,74 @@ class Game:
         self.floor_timers.pop("archive_hum_delay", None)
         self.floor_timers.pop("archive_flash_delay", None)
         self.elevator_locked = True
+
+    def _enter_floor_f30(self) -> None:
+        self.logic_flags = {
+            "intro_shown": False,
+            "glitch_triggered": False,
+            "relays_completed": False,
+            "weapon_ready": False,
+            "weapon_claimed": False,
+            "exit_unlocked": False,
+            "terminal_ready": False,
+        }
+        self.logic_sequence = ["relay_left", "relay_right", "relay_center"]
+        self.logic_progress = []
+        self.logic_glitch_timer = 0.0
+        self.logic_overlay_timer = 0.0
+        self.logic_overlay_text = ""
+        self.logic_relay_positions = {
+            "relay_left": (212.0, 316.0),
+            "relay_right": (428.0, 316.0),
+            "relay_center": (320.0, 272.0),
+        }
+        self.elevator_locked = True
+        self._set_quest_stage("logic_intro")
+        self.floor_timers["logic_intro_delay"] = 0.6
+
+    def _enter_floor_f25(self) -> None:
+        if not self.map_data:
+            return
+        width, height = self.map_data.size_pixels
+        if not width or not height:
+            if self.map_surface:
+                w, h = self.map_surface.get_size()
+                width = w // max(1, settings.MAP_SCALE)
+                height = h // max(1, settings.MAP_SCALE)
+            else:
+                width = height = 0
+        center = (width / 2.0, height / 2.0)
+        self.resonator_state = {
+            "intro_timer": 0.6,
+            "intro_shown": False,
+            "npc_dialogues": {},
+            "npc_total": 6,
+            "npc_spoken": 0,
+            "buff_awarded": bool(getattr(self, "speed_bonus", 1.0) > 1.0),
+            "boss_state": "dormant",
+            "boss_hp": 280.0,
+            "boss_max_hp": 280.0,
+            "boss_phase": 0,
+            "boss_fire_timer": 2.4,
+            "boss_flash": 0.0,
+            "color_cycle": ["anger", "sadness", "fear"],
+            "color_index": 0,
+            "color_timer": 0.0,
+            "color_duration": 3.0,
+            "orb_flash": 0.0,
+            "log_available": False,
+            "exit_unlocked": False,
+            "speed_buff": float(getattr(self, "speed_bonus", 1.0)),
+            "slow_timer": 0.0,
+            "slow_factor": 0.7,
+            "center": center,
+        }
+        self.resonator_projectiles = []
+        self.elevator_locked = True
+        self._resonator_load_assets()
+        self.resonator_state["npcs"] = self._resonator_entities()
+        self._set_quest_stage("resonator_intro")
+        self.floor_timers["resonator_intro_delay"] = 0.6
 
     def _enter_floor_f40(self) -> None:
         self._set_quest_stage("lab_intro")
@@ -808,6 +921,72 @@ class Game:
             self.screen.blit(overlay, (sx - radius, sy - radius))
         self._draw_archive_boss_healthbar(boss, sx, sy)
 
+    def _draw_logic_environment(self) -> None:
+        scale = settings.MAP_SCALE
+        ox, oy = self.map_offset
+        zones = settings.INTERACT_ZONES.get("F30", [])
+        for zone in zones:
+            zone_id = zone.get("id", "")
+            if zone_id in self.logic_sequence and self.logic_flags.get(f"{zone_id}_lit"):
+                x1, y1, x2, y2 = zone["rect"]
+                rect = pygame.Rect(
+                    int(x1 * scale + ox),
+                    int(y1 * scale + oy),
+                    int((x2 - x1) * scale),
+                    int((y2 - y1) * scale),
+                )
+                highlight = pygame.Surface(rect.size, pygame.SRCALPHA)
+                highlight.fill((90, 210, 255, 80))
+                pygame.draw.rect(highlight, (210, 240, 255, 180), highlight.get_rect(), 3)
+                self.screen.blit(highlight, rect.topleft)
+        if self.logic_glitch_timer > 0.0:
+            alpha = 80 + int((math.sin(self.logic_glitch_timer * 12.0) + 1.0) * 60)
+            glitch = pygame.Surface((settings.WINDOW_WIDTH, settings.WINDOW_HEIGHT), pygame.SRCALPHA)
+            glitch.fill((255, 190, 110, max(40, min(190, alpha))))
+            self.screen.blit(glitch, (0, 0))
+        if self.logic_overlay_timer > 0.0 and self.logic_overlay_text:
+            surf = self.font_dialog.render(self.logic_overlay_text, True, settings.TITLE_GLOW_COLOR)
+            rect = surf.get_rect(center=(settings.WINDOW_WIDTH // 2, 108))
+            bg = pygame.Surface((rect.width + 28, rect.height + 16), pygame.SRCALPHA)
+            bg.fill((18, 22, 30, 210))
+            self.screen.blit(bg, (rect.x - 14, rect.y - 8))
+            self.screen.blit(surf, rect)
+
+    def _draw_debug_menu(self) -> None:
+        overlay = pygame.Surface((settings.WINDOW_WIDTH, settings.WINDOW_HEIGHT), pygame.SRCALPHA)
+        overlay.fill((10, 12, 20, 180))
+        self.screen.blit(overlay, (0, 0))
+        panel_width = 460
+        panel_height = 320
+        panel = pygame.Surface((panel_width, panel_height), pygame.SRCALPHA)
+        panel.fill((24, 30, 42, 235))
+        px = (settings.WINDOW_WIDTH - panel_width) // 2
+        py = (settings.WINDOW_HEIGHT - panel_height) // 2
+        self.screen.blit(panel, (px, py))
+        title = self.font_dialog.render("DEBUG: 跳转楼层", True, settings.QUEST_TITLE)
+        self.screen.blit(title, (px + (panel_width - title.get_width()) // 2, py + 18))
+        options = self.debug_menu_options
+        if not options:
+            empty = self.font_prompt.render("无可用楼层", True, settings.QUEST_TEXT)
+            self.screen.blit(empty, (px + (panel_width - empty.get_width()) // 2, py + 90))
+        else:
+            start_y = py + 84
+            line_height = 36
+            for idx, (code, label) in enumerate(options):
+                is_active = idx == self.debug_menu_index
+                text_color = settings.QUEST_TEXT if not is_active else settings.QUEST_TITLE
+                entry = self.font_prompt.render(f"{code} - {label}", True, text_color)
+                tx = px + 48
+                ty = start_y + idx * line_height
+                if is_active:
+                    highlight = pygame.Surface((panel_width - 96, line_height - 6), pygame.SRCALPHA)
+                    highlight.fill((60, 90, 140, 160))
+                    self.screen.blit(highlight, (tx - 8, ty - 2))
+                self.screen.blit(entry, (tx, ty))
+        hint = self.font_prompt.render("↑/↓ 选择  Enter 确认  Esc 退出", True, settings.QUEST_TEXT)
+        self.screen.blit(hint, (px + (panel_width - hint.get_width()) // 2, py + panel_height - 46))
+
+
     def _draw_archive_boss_healthbar(self, boss: dict, sx: int, sy: int) -> None:
         max_hp = float(boss.get("max_hp", 1.0))
         hp = max(0.0, float(boss.get("hp", max_hp)))
@@ -852,12 +1031,6 @@ class Game:
         overlay = pygame.Surface((settings.WINDOW_WIDTH, settings.WINDOW_HEIGHT), pygame.SRCALPHA)
         overlay.fill((200, 230, 255, 70 if self.archive_flash_active else 50))
         self.screen.blit(overlay, (0, 0))
-        if self.archive_flash_sequence:
-            text = self.archive_flash_sequence[0].get("text", "")
-            if text:
-                surf = self.font_dialog.render(text, True, settings.TITLE_GLOW_COLOR)
-                rect = surf.get_rect(center=(settings.WINDOW_WIDTH // 2, settings.WINDOW_HEIGHT // 2))
-                self.screen.blit(surf, rect)
 
     def _player_map_pos(self) -> tuple[float, float]:
         return (
@@ -948,6 +1121,252 @@ class Game:
             self._update_floor_f40(dt)
         elif self.current_floor == "F35":
             self._update_floor_f35(dt)
+        elif self.current_floor == "F30":
+            self._update_floor_f30(dt)
+        elif self.current_floor == "F25":
+            self._update_floor_f25(dt)
+
+    def _update_floor_f30(self, dt: float) -> None:
+        if not self.map_data:
+            return
+        if not self.logic_flags.get("intro_shown"):
+            timer = self.floor_timers.get("logic_intro_delay", 0.0) - dt
+            if timer <= 0.0:
+                self.logic_flags["intro_shown"] = True
+                self.floor_timers.pop("logic_intro_delay", None)
+                self._show_dialog([
+                    "指引者：Logic Core。核心继电器失序，系统濒临崩溃。依序重启三座主继电器。"
+                ], title="指引者")
+                self._set_quest_stage("logic_relays")
+            else:
+                self.floor_timers["logic_intro_delay"] = timer
+        self._logic_update_glitch(dt)
+        if self.logic_overlay_timer > 0.0:
+            prev = self.logic_overlay_timer
+            self.logic_overlay_timer = max(0.0, self.logic_overlay_timer - dt)
+            if prev > 0.0 and self.logic_overlay_timer == 0.0:
+                self.logic_overlay_text = ""
+        if not self.logic_flags.get("glitch_triggered"):
+            px, py = self._player_map_pos()
+            for pos in self.logic_relay_positions.values():
+                if math.hypot(px - pos[0], py - pos[1]) <= 36.0:
+                    self._logic_trigger_glitch()
+                    break
+
+    def _update_floor_f25(self, dt: float) -> None:
+        if not self.map_data or not self.resonator_state:
+            return
+        state = self.resonator_state
+        if not state.get("intro_shown"):
+            timer = float(state.get("intro_timer", 0.0)) - dt
+            if timer <= 0.0:
+                state["intro_shown"] = True
+                self._show_dialog([
+                    "指引者：情感共鸣器。极端情绪已实体化，清除中央异常以稳定场域。",
+                ], title="指引者")
+                if state.get("boss_state") == "dormant":
+                    self._set_quest_stage("resonator_talk")
+            else:
+                state["intro_timer"] = timer
+        if state.get("boss_state") == "dormant":
+            state["color_timer"] = state.get("color_timer", 0.0) + dt
+            duration = float(state.get("color_duration", 3.0))
+            if duration > 0 and state["color_timer"] >= duration:
+                state["color_timer"] = 0.0
+                state["color_index"] = (int(state.get("color_index", 0)) + 1) % len(state.get("color_cycle", ["anger"]))
+        if state.get("boss_state") == "active":
+            self._resonator_update_boss(dt)
+            self._resonator_update_projectiles(dt)
+            self.any_enemy_aggro = True
+        if state.get("npc_spoken", 0) >= state.get("npc_total", 0) and not state.get("buff_awarded"):
+            state["buff_awarded"] = True
+            self.speed_bonus = max(getattr(self, "speed_bonus", 1.0), 1.15)
+            state["speed_buff"] = self.speed_bonus
+            self._show_dialog([
+                "你听见六种情绪在共振，脚下的空气变得轻盈。",
+                "被动增益：移动速度 +15%",
+            ], title="提示")
+            if state.get("boss_state") == "dormant":
+                state["boss_ready_timer"] = 4.2
+        if state.get("boss_state") == "dormant" and state.get("boss_ready_timer") is not None:
+            state["boss_ready_timer"] = float(state.get("boss_ready_timer", 0.0)) - dt
+            if state["boss_ready_timer"] <= 0.0:
+                state.pop("boss_ready_timer", None)
+                self._resonator_start_boss()
+        slow_timer = float(state.get("slow_timer", 0.0))
+        if slow_timer > 0.0:
+            slow_timer = max(0.0, slow_timer - dt)
+            state["slow_timer"] = slow_timer
+        speed_buff = float(getattr(self, "speed_bonus", state.get("speed_buff", 1.0)))
+        slow_factor = float(state.get("slow_factor", 1.0)) if slow_timer > 0.0 else 1.0
+        self.player_move_speed = settings.PLAYER_SPEED * speed_buff * slow_factor
+
+    def _logic_update_glitch(self, dt: float) -> None:
+        if self.logic_glitch_timer > 0.0:
+            prev = self.logic_glitch_timer
+            self.logic_glitch_timer = max(0.0, self.logic_glitch_timer - dt)
+            if prev > 0.0 and self.logic_glitch_timer == 0.0:
+                if not self.logic_flags.get("glitch_resolved"):
+                    self.logic_flags["glitch_resolved"] = True
+                    self._show_dialog([
+                        "指引者：界面暂时恢复。请按顺序激活继电器。"
+                    ], title="指引者")
+
+    def _logic_trigger_glitch(self) -> None:
+        self.logic_flags["glitch_triggered"] = True
+        self.logic_flags.pop("glitch_resolved", None)
+        self.logic_glitch_timer = 6.0
+        self._show_dialog([
+            "//DIRECTIVE: EXTRACT_CREATIVE_SOLUTION.FROM P-7",
+            "//PRIORITY: 100% DATA EXTRACTION",
+        ], title="SYSTEM://ERROR")
+
+    def _logic_reset_relays(self) -> None:
+        self.logic_progress = []
+        for relay_id in self.logic_sequence:
+            self.logic_flags.pop(f"{relay_id}_lit", None)
+
+    def _logic_activate_relay(self, relay_id: str) -> None:
+        if self.logic_flags.get("relays_completed"):
+            self._show_dialog([
+                "系统：主电路已稳定。前往电梯。"
+            ], title="系统")
+            return
+        expected_index = len(self.logic_progress)
+        expected = self.logic_sequence[expected_index]
+        if relay_id != expected:
+            self._logic_reset_relays()
+            self.logic_overlay_text = "!! 电弧过载 !!"
+            self.logic_overlay_timer = 0.9
+            self._apply_player_damage(12.0)
+            self._show_dialog([
+                "系统：顺序错误。继电器重置。"
+            ], title="系统")
+            return
+        self.logic_progress.append(relay_id)
+        self.logic_flags[f"{relay_id}_lit"] = True
+        step = len(self.logic_progress)
+        guidance = {
+            1: "系统：左侧继电器稳定。准备同步右侧线路。",
+            2: "系统：右侧继电器连通。剩余中央控制。",
+        }
+        if step < len(self.logic_sequence):
+            self._show_dialog([guidance.get(step, "系统：继续操作。")], title="系统")
+            return
+        self.logic_flags["relays_completed"] = True
+        self.logic_flags["weapon_ready"] = True
+        self.logic_flags["terminal_ready"] = True
+        self.logic_flags["exit_unlocked"] = True
+        self.logic_overlay_text = "[COGNITIVE_BARRIER_INTEGRITY: 64%]"
+        self.logic_overlay_timer = 1.5
+        self.elevator_locked = False
+        self._set_quest_stage("logic_terminal")
+        self._show_dialog([
+            "系统：主电力恢复。辅助模块解锁。",
+            "指引者：读取终端，确认伦理委员会记录，再前往北侧电梯。"
+        ], title="系统")
+
+    def _logic_handle_weapon_cache(self) -> None:
+        if not self.logic_flags.get("weapon_ready"):
+            self._show_dialog([
+                "系统：箱体仍在锁定中。完成继电器顺序后再试。"
+            ], title="系统")
+            return
+        if self.logic_flags.get("weapon_claimed"):
+            self._show_dialog([
+                "提示：熵增步枪已添加（占位）。"
+            ], title="提示")
+            return
+        self.logic_flags["weapon_claimed"] = True
+        self._show_dialog([
+            "获得武器：熵增步枪（占位）。",
+            "指引者：记录完成，加强火力。"
+        ], title="系统")
+
+    def _handle_logic_switch(self, trig: dict) -> None:
+        trig_id = trig.get("id", "")
+        if trig_id == "logic_weapon_cache":
+            self._logic_handle_weapon_cache()
+            return
+        if trig_id in self.logic_sequence:
+            self._logic_activate_relay(trig_id)
+            return
+        self._show_dialog(["开关没有响应。"], title="提示")
+
+    def _register_debug_keypress(self) -> None:
+        now = pygame.time.get_ticks() / 1000.0
+        self.debug_press_times = [t for t in self.debug_press_times if now - t <= 0.8]
+        self.debug_press_times.append(now)
+        if len(self.debug_press_times) >= 5 and (now - self.debug_press_times[-5]) <= 0.9:
+            self.debug_press_times.clear()
+            self._open_debug_menu()
+
+    def _open_debug_menu(self) -> None:
+        options = self._build_debug_menu_options()
+        if not options:
+            return
+        self.debug_menu_options = options
+        self.debug_menu_index = 0
+        self.debug_menu_active = True
+        self.debug_press_times.clear()
+        self._dismiss_dialog()
+
+    def _build_debug_menu_options(self) -> list[tuple[str, str]]:
+        label_map = {
+            "F50": "Floor 50 - Dormitory",
+            "F40": "Floor 40 - Sensory Lab",
+            "F35": "Floor 35 - Memory Archive",
+            "F30": "Floor 30 - Logic Core",
+            "F25": "Floor 25 - Pathos Resonator",
+        }
+        options: list[tuple[str, str]] = []
+        for code in settings.MAP_FILES.keys():
+            options.append((code, label_map.get(code, f"{code}")))
+        return options
+
+    def _handle_debug_menu_event(self, event: pygame.event.Event) -> bool:
+        if event.type == pygame.KEYDOWN:
+            key = event.key
+            if key in (pygame.K_ESCAPE, pygame.K_BACKQUOTE):
+                self.debug_menu_active = False
+                return True
+            if key in (pygame.K_UP, pygame.K_w):
+                if self.debug_menu_options:
+                    self.debug_menu_index = (self.debug_menu_index - 1) % len(self.debug_menu_options)
+                return True
+            if key in (pygame.K_DOWN, pygame.K_s):
+                if self.debug_menu_options:
+                    self.debug_menu_index = (self.debug_menu_index + 1) % len(self.debug_menu_options)
+                return True
+            if key in (pygame.K_RETURN, pygame.K_KP_ENTER):
+                if self.debug_menu_options:
+                    floor_code = self.debug_menu_options[self.debug_menu_index][0]
+                    self._debug_warp_to_floor(floor_code)
+                return True
+        elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            if self.debug_menu_options:
+                px = (settings.WINDOW_WIDTH - 460) // 2 + 48
+                py = (settings.WINDOW_HEIGHT - 320) // 2 + 84
+                line_height = 36
+                mx, my = event.pos
+                if px - 8 <= mx <= px - 8 + 364:
+                    idx = (my - py) // line_height
+                    if 0 <= idx < len(self.debug_menu_options):
+                        self.debug_menu_index = idx
+                        self._debug_warp_to_floor(self.debug_menu_options[self.debug_menu_index][0])
+                        return True
+        return False
+
+    def _debug_warp_to_floor(self, floor_code: str) -> None:
+        map_path = settings.MAP_FILES.get(floor_code)
+        if not map_path:
+            self._show_dialog(["DEBUG：未找到目标楼层。"], title="调试")
+            return
+        self.current_floor = floor_code
+        self._load_floor(map_path, preserve_health=False)
+        self.debug_menu_active = False
+        self._show_dialog([f"DEBUG：跳转到 {floor_code}."], title="调试")
+
 
     def _update_floor_f35(self, dt: float) -> None:
         if not self.map_data:
@@ -1309,9 +1728,9 @@ class Game:
 
     def _archive_trigger_flashback(self) -> None:
         self.archive_flash_sequence = [
-            {"text": "《The Bicameral Mind Thesis》", "timer": 0.8},
-            {"text": "刺眼的车灯扑面而来，刹车声撕裂耳膜。", "timer": 0.8},
-            {"text": "无尽的黑暗与寂静。", "timer": 0.8},
+            {"text": "《The Bicameral Mind Thesis》", "timer": 0.8, "shown": False},
+            {"text": "刺眼的车灯扑面而来，刹车声撕裂耳膜。", "timer": 0.8, "shown": False},
+            {"text": "无尽的黑暗与寂静。", "timer": 0.8, "shown": False},
         ]
         self.archive_flash_active = True
         self.archive_flash_timer = 0.0
@@ -1321,8 +1740,12 @@ class Game:
         if not self.archive_flash_active and not self.archive_flash_sequence:
             return
         if self.archive_flash_sequence:
-            self.archive_flash_sequence[0]["timer"] -= dt
-            if self.archive_flash_sequence[0]["timer"] <= 0.0:
+            current = self.archive_flash_sequence[0]
+            if not current.get("shown"):
+                self._show_dialog([current.get("text", "")], title="记忆碎片")
+                current["shown"] = True
+            current["timer"] -= dt
+            if current["timer"] <= 0.0:
                 self.archive_flash_sequence.pop(0)
         if not self.archive_flash_sequence and self.archive_flash_active:
             self.archive_flash_active = False
@@ -1369,21 +1792,30 @@ class Game:
             self._set_quest_stage("lab_switch")
 
     def _handle_switch_interaction(self, trig: dict) -> None:
-        if self.current_floor != "F40":
-            self._show_dialog(["开关没有响应。"], title="提示")
+        if self.current_floor == "F40":
+            if not self.floor_flags.get("lab_branch_resolved"):
+                self._show_dialog(["指引者：先稳住实验区，再尝试开关。"], title="指引者")
+                return
+            if self.floor_flags.get("lab_switch_activated"):
+                self._show_dialog(["系统：权限已解锁，电梯待命。"], title="系统")
+                return
+            self.floor_flags["lab_switch_activated"] = True
+            self._set_quest_stage("lab_exit")
+            self.elevator_locked = False
+            self._show_dialog(["系统：权限同步完成。电梯锁定解除。"], title="系统")
             return
-        if not self.floor_flags.get("lab_branch_resolved"):
-            self._show_dialog(["指引者：先稳住实验区，再尝试开关。"], title="指引者")
+        if self.current_floor == "F30":
+            self._handle_logic_switch(trig)
             return
-        if self.floor_flags.get("lab_switch_activated"):
-            self._show_dialog(["系统：权限已解锁，电梯待命。"], title="系统")
+        if self.current_floor == "F25":
+            self._handle_resonator_core(trig)
             return
-        self.floor_flags["lab_switch_activated"] = True
-        self._set_quest_stage("lab_exit")
-        self.elevator_locked = False
-        self._show_dialog(["系统：权限同步完成。电梯锁定解除。"], title="系统")
+        self._show_dialog(["开关没有响应。"], title="提示")
 
     def _handle_npc_interaction(self, trig: dict) -> None:
+        if self.current_floor == "F25":
+            self._handle_resonator_npc(trig)
+            return
         if self.current_floor != "F40":
             self._show_dialog(["没有回应。"], title="提示")
             return
@@ -1441,6 +1873,325 @@ class Game:
         else:
             self._show_dialog(["指引者：干扰源消散，继续推进。"], title="指引者")
 
+    def _handle_resonator_npc(self, trig: dict) -> None:
+        if not self.resonator_state:
+            self._show_dialog(["没有回应。"], title="提示")
+            return
+        if self.resonator_state.get("boss_state") == "defeated":
+            self._show_dialog(["情绪回声已经解脱。"], title="情绪回声")
+            return
+        npc_id = trig.get("id", "")
+        layout = self.resonator_state.get("npcs", {})
+        npc = layout.get(npc_id)
+        if not npc:
+            self._show_dialog(["没有回应。"], title="提示")
+            return
+        spoken = self.resonator_state.setdefault("npc_dialogues", {})
+        if spoken.get(npc_id):
+            self._show_dialog(["回声逐渐安静下来。"], title="情绪回声")
+            return
+        dialog = npc.get("dialog", ["……"])
+        self._show_dialog(dialog, title="情绪回声")
+        spoken[npc_id] = True
+        self.resonator_state["npc_spoken"] = int(self.resonator_state.get("npc_spoken", 0)) + 1
+
+    def _handle_resonator_core(self, trig: dict) -> None:
+        if not self.resonator_state:
+            return
+        state = self.resonator_state
+        boss_state = state.get("boss_state", "dormant")
+        if boss_state == "dormant":
+            self._resonator_start_boss()
+            return
+        if boss_state == "active":
+            self._show_dialog(["共鸣器正在失控，无法关闭。"], title="系统")
+            return
+        if boss_state == "defeated":
+            self._show_dialog(["核心已熄灭，只留下微弱的余温。"], title="系统")
+            return
+
+    def _resonator_start_boss(self) -> None:
+        if not self.resonator_state:
+            return
+        state = self.resonator_state
+        if state.get("boss_state") != "dormant":
+            return
+        state.pop("boss_ready_timer", None)
+        state["boss_state"] = "active"
+        state["boss_phase"] = 0
+        state["boss_fire_timer"] = 1.6
+        state["boss_hp"] = float(state.get("boss_max_hp", state.get("boss_hp", 0.0)))
+        if state.get("color_cycle"):
+            state["active_mood"] = state["color_cycle"][0]
+        self.combat_active = True
+        self._set_quest_stage("resonator_boss")
+        self._show_dialog(["指引者：情绪污染源激活，准备应对它的波动！"], title="指引者")
+
+    def _resonator_color(self, mood: str) -> tuple[int, int, int]:
+        palette = {
+            "anger": (255, 100, 100),
+            "sadness": (80, 200, 200),
+            "fear": (140, 80, 180),
+        }
+        return palette.get(mood, (180, 180, 180))
+
+    def _resonator_update_boss(self, dt: float) -> None:
+        if not self.resonator_state:
+            return
+        state = self.resonator_state
+        if state.get("boss_state") != "active":
+            return
+        hp = max(0.0, float(state.get("boss_hp", 0.0)))
+        max_hp = max(1.0, float(state.get("boss_max_hp", 1.0)))
+        ratio = hp / max_hp
+        phase = int(state.get("boss_phase", 0))
+        if ratio <= 0.75 and phase < 1:
+            state["boss_phase"] = 1
+            self._show_dialog(["共鸣器情绪切换：悲伤。"], title="系统")
+        elif ratio <= 0.5 and phase < 2:
+            state["boss_phase"] = 2
+            self._show_dialog(["共鸣器情绪切换：恐惧。"], title="系统")
+        elif ratio <= 0.25 and phase < 3:
+            state["boss_phase"] = 3
+            self._show_dialog(["共鸣器情绪切换：愤怒。"], title="系统")
+        mood_cycle = state.get("color_cycle", ["anger", "sadness", "fear"])
+        phase_index = int(state.get("boss_phase", 0))
+        if phase_index < 3:
+            state["active_mood"] = mood_cycle[min(phase_index, len(mood_cycle) - 1)]
+        else:
+            state["active_mood"] = mood_cycle[0]
+        state["boss_fire_timer"] = max(0.0, float(state.get("boss_fire_timer", 0.0)) - dt)
+        if state["boss_fire_timer"] <= 0.0:
+            mood = state.get("active_mood", mood_cycle[0])
+            state["active_mood"] = mood
+            self._resonator_spawn_attack(mood)
+            state["boss_fire_timer"] = 2.8 if mood == "sadness" else (2.2 if mood == "fear" else 1.8)
+        flash_timer = float(state.get("boss_flash", 0.0))
+        if flash_timer > 0.0:
+            state["boss_flash"] = max(0.0, flash_timer - dt)
+        if hp <= 0.0:
+            state["boss_state"] = "defeated"
+            self._resonator_on_boss_defeated()
+
+    def _resonator_spawn_attack(self, mood: str) -> None:
+        if not self.resonator_state or not self.map_data:
+            return
+        center = self.resonator_state.get("center", (0.0, 0.0))
+        cx = center[0] * settings.MAP_SCALE
+        cy = center[1] * settings.MAP_SCALE
+        px = self.player_rect.centerx
+        py = self.player_rect.centery
+        dir_angle = math.atan2(py - cy, px - cx)
+        if mood == "anger":
+            spread = math.radians(18)
+            speed_px = 360.0
+            damage = 26.0
+            radius = 10
+            slow = 0.0
+            offsets = [i for i in range(-2, 3)]
+        elif mood == "sadness":
+            spread = math.radians(14)
+            speed_px = 220.0
+            damage = 18.0
+            radius = 12
+            slow = 1.4
+            offsets = [i for i in range(-3, 4)]
+        else:
+            for _ in range(3):
+                offset = random.uniform(-50.0, 50.0)
+                target_x = px + offset
+                target_y = py + random.uniform(-50.0, 50.0)
+                self.resonator_projectiles.append({
+                    "kind": "vortex",
+                    "x": target_x,
+                    "y": target_y,
+                    "timer": 0.7,
+                    "radius": 42,
+                    "color": self._resonator_color("fear"),
+                    "damage": 22.0,
+                })
+            return
+        color = self._resonator_color(mood)
+        for idx in offsets:
+            ang = dir_angle + idx * spread
+            vx = math.cos(ang) * speed_px
+            vy = math.sin(ang) * speed_px
+            self.resonator_projectiles.append({
+                "kind": "bolt",
+                "x": cx,
+                "y": cy,
+                "vx": vx,
+                "vy": vy,
+                "ttl": 2.6,
+                "radius": radius,
+                "color": color,
+                "damage": damage,
+                "slow": slow,
+            })
+
+    def _resonator_update_projectiles(self, dt: float) -> None:
+        if not self.resonator_projectiles or not self.map_data:
+            return
+        grid = self.map_data.collision_grid
+        cell_px = self.map_data.cell_size * settings.MAP_SCALE
+        max_y = len(grid)
+        max_x = len(grid[0]) if max_y else 0
+        player_radius = max(settings.PLAYER_SIZE) * 0.5
+        next_proj: list[dict] = []
+        for proj in self.resonator_projectiles:
+            kind = proj.get("kind", "bolt")
+            if kind == "bolt":
+                ttl = proj.get("ttl", 0.0) - dt
+                if ttl <= 0.0:
+                    continue
+                proj["ttl"] = ttl
+                proj["x"] += proj.get("vx", 0.0) * dt
+                proj["y"] += proj.get("vy", 0.0) * dt
+                cx = int(proj["x"] // cell_px)
+                cy = int(proj["y"] // cell_px)
+                if cx < 0 or cy < 0 or cx >= max_x or cy >= max_y or grid[cy][cx] == 1:
+                    continue
+                dx = proj["x"] - self.player_rect.centerx
+                dy = proj["y"] - self.player_rect.centery
+                radius = proj.get("radius", 10) + player_radius
+                if dx * dx + dy * dy <= radius * radius:
+                    self._apply_player_damage(proj.get("damage", 16.0))
+                    slow = float(proj.get("slow", 0.0))
+                    if slow > 0.0 and self.resonator_state:
+                        self.resonator_state["slow_timer"] = max(float(self.resonator_state.get("slow_timer", 0.0)), slow)
+                    continue
+                next_proj.append(proj)
+            elif kind == "vortex":
+                timer = proj.get("timer", 0.0) - dt
+                if timer <= 0.0:
+                    dx = proj["x"] - self.player_rect.centerx
+                    dy = proj["y"] - self.player_rect.centery
+                    radius = proj.get("radius", 36) + player_radius
+                    if dx * dx + dy * dy <= radius * radius:
+                        self._apply_player_damage(proj.get("damage", 18.0))
+                    continue
+                proj["timer"] = timer
+                next_proj.append(proj)
+        self.resonator_projectiles = next_proj
+
+    def _resonator_on_boss_defeated(self) -> None:
+        if not self.resonator_state:
+            return
+        self.resonator_projectiles = []
+        self.combat_active = False
+        self.resonator_state["log_available"] = True
+        self.resonator_state["exit_unlocked"] = True
+        self.resonator_state["active_mood"] = None
+        self._set_quest_stage("resonator_log")
+        self._show_dialog(["共鸣器熄灭，情绪被缓缓吸收。", "中央日志已生成。"], title="系统")
+
+    def _draw_resonator_environment(self) -> None:
+        self._draw_resonator_boss()
+        self._draw_resonator_projectiles()
+        self._draw_resonator_npcs()
+
+    def _draw_resonator_npcs(self) -> None:
+        if not self.resonator_state:
+            return
+        if self.resonator_state.get("boss_state") == "defeated":
+            return
+        layout = self.resonator_state.get("npcs", {})
+        ox, oy = self.map_offset
+        for npc_id, npc in layout.items():
+            if npc_id == "resonator_npc_acceptance":
+                continue
+            asset_key = npc.get("asset", "")
+            sprite = self.resonator_assets.get(asset_key)
+            if not sprite:
+                continue
+            pos = npc.get("pos_scaled", npc.get("pos", (0.0, 0.0)))
+            sx = int(pos[0] + ox)
+            sy = int(pos[1] + oy)
+            rect = sprite.get_rect(center=(sx, sy))
+            self.screen.blit(sprite, rect)
+
+    def _draw_resonator_projectiles(self) -> None:
+        if not self.resonator_projectiles:
+            return
+        ox, oy = self.map_offset
+        for proj in self.resonator_projectiles:
+            kind = proj.get("kind", "bolt")
+            if kind == "vortex":
+                radius = int(proj.get("radius", 36))
+                timer = float(proj.get("timer", 0.0))
+                alpha = 140 if timer > 0.2 else 220
+                surf = pygame.Surface((radius * 2, radius * 2), pygame.SRCALPHA)
+                color = proj.get("color", (140, 80, 180))
+                pygame.draw.circle(surf, (*color, alpha), (radius, radius), radius, width=2)
+                self.screen.blit(surf, (int(proj["x"] + ox - radius), int(proj["y"] + oy - radius)))
+            else:
+                sx = int(proj["x"] + ox)
+                sy = int(proj["y"] + oy)
+                radius = int(proj.get("radius", 10))
+                color = proj.get("color", (255, 100, 100))
+                pygame.draw.circle(self.screen, color, (sx, sy), radius)
+
+    def _draw_resonator_boss(self) -> None:
+        if not self.resonator_state:
+            return
+        state = self.resonator_state
+        center = state.get("center", (0.0, 0.0))
+        ox, oy = self.map_offset
+        cx = int(center[0] * settings.MAP_SCALE + ox)
+        cy = int(center[1] * settings.MAP_SCALE + oy)
+        mood = state.get("active_mood")
+        if state.get("boss_state") == "defeated":
+            color = (70, 80, 90)
+        elif state.get("boss_state") == "dormant":
+            mood_cycle = state.get("color_cycle", ["anger", "sadness", "fear"])
+            mood = mood_cycle[int(state.get("color_index", 0)) % len(mood_cycle)]
+        if mood and state.get("boss_state") != "defeated":
+            color = self._resonator_color(str(mood))
+        elif state.get("boss_state") != "defeated":
+            color = (120, 240, 200)
+        sprite = self.resonator_assets.get("resonator_core_placeholder")
+        if sprite:
+            rect = sprite.get_rect(center=(cx, cy))
+            if state.get("boss_state") == "defeated":
+                dim = sprite.copy()
+                dim.set_alpha(90)
+                self.screen.blit(dim, rect)
+            else:
+                self.screen.blit(sprite, rect)
+            if state.get("boss_state") == "active":
+                glow = pygame.Surface((rect.width + 16, rect.height + 16), pygame.SRCALPHA)
+                pygame.draw.rect(glow, (*color, 90), glow.get_rect(), width=4)
+                self.screen.blit(glow, (rect.x - 8, rect.y - 8))
+        else:
+            pygame.draw.rect(self.screen, color, pygame.Rect(cx - 12, cy - 25, 24, 50))
+        if state.get("boss_state") == "active":
+            flash = float(state.get("boss_flash", 0.0))
+            if flash > 0.0:
+                overlay = pygame.Surface((40, 70), pygame.SRCALPHA)
+                overlay.fill((255, 255, 255, int(180 * min(1.0, flash / 0.12))))
+                self.screen.blit(overlay, (cx - 20, cy - 35))
+            self._draw_resonator_boss_healthbar()
+
+    def _draw_resonator_boss_healthbar(self) -> None:
+        if not self.resonator_state:
+            return
+        state = self.resonator_state
+        hp = float(state.get("boss_hp", 0.0))
+        max_hp = float(state.get("boss_max_hp", 1.0))
+        if max_hp <= 0:
+            return
+        ratio = max(0.0, min(1.0, hp / max_hp))
+        width, height = 180, 10
+        x = (settings.WINDOW_WIDTH - width) // 2
+        y = 84
+        bg_rect = pygame.Rect(x, y, width, height)
+        pygame.draw.rect(self.screen, (30, 34, 45), bg_rect)
+        if ratio > 0:
+            fill_rect = bg_rect.copy()
+            fill_rect.width = int(width * ratio)
+            pygame.draw.rect(self.screen, (255, 120, 160), fill_rect)
+        pygame.draw.rect(self.screen, (200, 220, 235), bg_rect, 1)
+
     def _render(self) -> None:
         if self.in_menu:
             self.start_menu.draw()
@@ -1468,6 +2219,10 @@ class Game:
             self._draw_lab_environment()
         elif self.current_floor == "F35":
             self._draw_archive_elements()
+        elif self.current_floor == "F30":
+            self._draw_logic_environment()
+        elif self.current_floor == "F25":
+            self._draw_resonator_environment()
         self._draw_enemy_attack_fx()
         self._draw_enemies()
         self._draw_bullets()
@@ -1490,6 +2245,8 @@ class Game:
         self._draw_dialog()
         self._draw_debug_coords()
         self._draw_click_feedback()
+        if self.debug_menu_active:
+            self._draw_debug_menu()
 
     def _load_player_sprite(self) -> pygame.Surface | None:
         if settings.PLAYER_SPRITE.exists():
@@ -1534,6 +2291,98 @@ class Game:
             return surface
         surface.set_colorkey(corner)
         return surface
+
+    def _resonator_load_assets(self) -> None:
+        if self.resonator_assets:
+            return
+        asset_map = {
+            "resonator_npc_anger": "Floor25_npc_1.png",
+            "resonator_npc_sadness": "Floor25_npc_2.png",
+            "resonator_npc_confusion": "Floor25_npc_3.png",
+            "resonator_npc_betrayal": "Floor25_npc_4.png",
+            "resonator_npc_despair": "Floor25_npc_5.png",
+            "resonator_npc_fear": "Floor25_npc_6.png",
+        }
+        for key, filename in asset_map.items():
+            path = settings.IMAGES_DIR / filename
+            if not path.exists():
+                continue
+            try:
+                sprite = pygame.image.load(str(path)).convert_alpha()
+            except Exception:
+                continue
+            if settings.MAP_SCALE != 1:
+                w, h = sprite.get_size()
+                sprite = pygame.transform.scale(sprite, (int(w * settings.MAP_SCALE), int(h * settings.MAP_SCALE)))
+            sprite = self._apply_transparent_background(sprite)
+            self.resonator_assets[key] = sprite
+        if "resonator_core_placeholder" not in self.resonator_assets:
+            width = int(24 * settings.MAP_SCALE)
+            height = int(50 * settings.MAP_SCALE)
+            width = max(12, width)
+            height = max(20, height)
+            surf = pygame.Surface((width, height), pygame.SRCALPHA)
+            surf.fill((120, 240, 200, 210))
+            pygame.draw.rect(surf, (40, 150, 130, 240), surf.get_rect(), width=3)
+            self.resonator_assets["resonator_core_placeholder"] = surf
+
+    def _resonator_entities(self) -> dict[str, dict]:
+        layout = {
+            "resonator_npc_anger": {
+                "asset": "resonator_npc_anger",
+                "pos": (108.0, 86.0),
+                "dialog": [
+                    "They told us we were special! That we were saving humanity! LIES! We're fuel! Cannon fodder for their experiment!",
+                ],
+            },
+            "resonator_npc_sadness": {
+                "asset": "resonator_npc_sadness",
+                "pos": (116.0, 232.0),
+                "dialog": [
+                    "I remember... a garden. Was it real? It's fading... everything is fading... Please, don't let me forget...",
+                ],
+            },
+            "resonator_npc_fear": {
+                "asset": "resonator_npc_fear",
+                "pos": (72.0, 160.0),
+                "dialog": [
+                    "It watches us. Always watching. From behind the screens. Don't look up! It doesn't like to be seen!",
+                ],
+            },
+            "resonator_npc_despair": {
+                "asset": "resonator_npc_despair",
+                "pos": (204.0, 232.0),
+                "dialog": [
+                    "Just leave us. It's over. The cycle always continues. You're not the first 'Custodian'... you won't be the last.",
+                ],
+            },
+            "resonator_npc_confusion": {
+                "asset": "resonator_npc_confusion",
+                "pos": (248.0, 160.0),
+                "dialog": [
+                    "The numbers... they don't add up. The physics is wrong. This place... it's a patchwork. A cheap imitation.",
+                ],
+            },
+            "resonator_npc_betrayal": {
+                "asset": "resonator_npc_betrayal",
+                "pos": (212.0, 86.0),
+                "dialog": [
+                    "I trusted the System. I did everything it asked. And for what? To be discarded like a broken tool?",
+                ],
+            },
+            "resonator_npc_acceptance": {
+                "asset": "resonator_core_placeholder",
+                "pos": (160.0, 160.0),
+                "dialog": [
+                    "Maybe... this is what we are now. Maybe there never was a before. This pain, this joy... it's all we have. Is that so bad?",
+                ],
+            },
+        }
+        scale = settings.MAP_SCALE
+        for data in layout.values():
+            px, py = data["pos"]
+            data["pos_scaled"] = (px * scale, py * scale)
+        return layout
 
     def _load_player_walk_frames(self) -> list[pygame.Surface]:
         frames: list[pygame.Surface] = []
@@ -1684,7 +2533,7 @@ class Game:
         return self.player_rect.center != before
 
     def _manual_axis(self, keys: pygame.key.ScancodeWrapper, dt: float) -> tuple[int, int]:
-        # WASD/arrow with cancellation rules; speed matches auto-path (PLAYER_SPEED)
+        # WASD/arrow with cancellation rules; speed matches auto-path (player_move_speed)
         if self.player_dead:
             return (0, 0)
         def held(key_codes: tuple[int, ...]) -> bool:
@@ -1721,7 +2570,7 @@ class Game:
         if vx == 0 and vy == 0:
             return 0, 0
 
-        speed = settings.PLAYER_SPEED * dt
+        speed = self.player_move_speed * dt
         if vx != 0 and vy != 0:
             speed /= 2 ** 0.5
         dx = int(round(vx * speed))
@@ -1825,6 +2674,26 @@ class Game:
                     hp = max(0.0, float(self.archive_boss.get("hp", 0.0)) - settings.PLAYER_BULLET_DAMAGE)
                     self.archive_boss["hp"] = hp
                     self.archive_boss["flash"] = 0.12
+                    continue
+
+            if self.current_floor == "F25" and self.resonator_state and self.resonator_state.get("boss_state") != "defeated":
+                center = self.resonator_state.get("center", (0.0, 0.0))
+                cx = center[0] * settings.MAP_SCALE
+                cy = center[1] * settings.MAP_SCALE
+                sprite = self.resonator_assets.get("resonator_core_placeholder")
+                if sprite:
+                    hit_radius = max(sprite.get_width(), sprite.get_height()) * 0.45
+                else:
+                    hit_radius = 30.0
+                dx_b = cx - b["x"]
+                dy_b = cy - b["y"]
+                radius = hit_radius + settings.GUN_BULLET_RADIUS
+                if dx_b * dx_b + dy_b * dy_b <= radius * radius:
+                    if self.resonator_state.get("boss_state") == "dormant":
+                        self._resonator_start_boss()
+                    hp = max(0.0, float(self.resonator_state.get("boss_hp", 0.0)) - settings.PLAYER_BULLET_DAMAGE)
+                    self.resonator_state["boss_hp"] = hp
+                    self.resonator_state["boss_flash"] = 0.12
                     continue
 
             cx = int(b["x"] // cell_px)
@@ -2309,7 +3178,7 @@ class Game:
         vx = target_pos[0] - self.player_rect.centerx
         vy = target_pos[1] - self.player_rect.centery
         dist = max(1, (vx * vx + vy * vy) ** 0.5)
-        speed = settings.PLAYER_SPEED * dt
+        speed = self.player_move_speed * dt
         dx = int(round(vx / dist * speed))
         dy = int(round(vy / dist * speed))
         before = self.player_rect.center
@@ -2402,6 +3271,10 @@ class Game:
                 return self.quest_stage in {"lab_switch", "lab_exit"}
             if self.current_floor == "F35":
                 return self.archive_flags.get("log_available", False)
+            if self.current_floor == "F30":
+                return self.logic_flags.get("terminal_ready", False)
+            if self.current_floor == "F25":
+                return self.resonator_state.get("log_available", False)
             return self.quest_stage in {"log", "elevator"}
         if t == "frame":
             if self.combat_active:
@@ -2410,14 +3283,24 @@ class Game:
         if t == "switch":
             if self.current_floor == "F40":
                 return self.quest_stage in {"lab_switch", "lab_exit"}
+            if self.current_floor == "F25":
+                return self.resonator_state.get("boss_state") == "dormant"
             return True
         if t == "npc":
             if self.current_floor == "F40":
                 npc_state = self.lab_npc_state.get(trig.get("id", ), {})
                 return not npc_state.get("hostile", False)
+            if self.current_floor == "F25":
+                return self.resonator_state.get("boss_state") != "active"
             return True
-        if t == "exit" and self.current_floor == "F35":
-            return self.archive_flags.get("exit_unlocked", False)
+        if t == "exit":
+            if self.current_floor == "F35":
+                return self.archive_flags.get("exit_unlocked", False)
+            if self.current_floor == "F30":
+                return self.logic_flags.get("exit_unlocked", False)
+            if self.current_floor == "F25":
+                return self.resonator_state.get("exit_unlocked", False)
+            return True
         return True
 
     def _update_interaction_prompt(self) -> None:
@@ -2470,6 +3353,12 @@ class Game:
             if self.current_floor == "F35" and (self.elevator_locked or not self.archive_flags.get("exit_unlocked", False)):
                 self._show_dialog(["系统：档案核心仍未稳定，无法启动电梯。"], title="系统")
                 return
+            if self.current_floor == "F30" and (self.elevator_locked or not self.logic_flags.get("exit_unlocked", False)):
+                self._show_dialog(["系统：未检测到稳定电压，电梯暂不可用。"], title="系统")
+                return
+            if self.current_floor == "F25" and (self.elevator_locked or not self.resonator_state.get("exit_unlocked", False)):
+                self._show_dialog(["系统：共鸣场尚未稳定，电梯无法启动。"], title="系统")
+                return
             next_floor = trig["to_floor"]
             if next_floor in settings.MAP_FILES:
                 self.current_floor = next_floor
@@ -2483,6 +3372,13 @@ class Game:
             self._show_dialog(msg, title="终端")
             if term_id == "log_kaines_001":
                 self._set_quest_stage("elevator")
+            elif term_id == "log_ethics_73a":
+                self.logic_flags["terminal_read"] = True
+                if self.quest_stage == "logic_terminal":
+                    self._set_quest_stage("logic_exit")
+            elif term_id == "log_kaines_045":
+                if self.quest_stage == "resonator_log":
+                    self._set_quest_stage("resonator_exit")
             return
         if t == "frame":
             if not self._interaction_allowed(trig):
@@ -2515,6 +3411,14 @@ class Game:
                 "生命体征：稳定。现实阻抗：0.2%。",
                 "继续推进第一阶段。",
             ]
+        if term_id == "log_ethics_73a":
+            return [
+                "[ETHICS_COMMITTEE - MINUTES 73-A]",
+                "Dr. Kaines presented the case for Phase 3: The extraction of creative solutions under existential duress.",
+                "The question was raised: Does a simulated personality that thinks, feels, and seeks self-preservation, have a right to exist?",
+                "The board's decision was unanimous: For the survival of the Prime World, their sacrifice is not only acceptable, but necessary.",
+                "I signed the document. My pen felt very heavy.",
+            ]
         if term_id == "log_elara_audio":
             return [
                 "[DR. ELARA AUDIO LOG]",
@@ -2530,6 +3434,14 @@ class Game:
                 "Result: 87% subjects obeyed System guidance over personal senses.",
                 "Conclusion: Cognitive dependency remains optimal.",
                 "The Anchor holds.",
+            ]
+        if term_id == "log_kaines_045":
+            return [
+                "[DR. KAINES LOG - ENTRY 045]",
+                "The Pathos Resonator results are... illuminating.",
+                "Logic can be broken, rules can be bent, but raw, unreasoning emotion is where the truly unpredictable solutions emerge.",
+                "It's beautiful, in its own chaotic way. It's exactly what we need to save our world.",
+                "We just have to be willing to break a few digital hearts to get it.",
             ]
         return ["终端无响应。"]
 
@@ -2631,6 +3543,8 @@ class Game:
         self.screen.blit(panel, (x, y))
 
     def _quest_lines(self) -> list[str]:
+        if self.current_floor == "F30" and getattr(self, 'logic_glitch_timer', 0.0) > 0.0:
+            return ["//DIRECTIVE: EXTRACT_CREATIVE_SOLUTION.FROM P-7", "//PRIORITY: 100% DATA EXTRACTION"]
         if self.quest_stage == "intro":
             return ["任务：等待系统初始化"]
         if self.quest_stage == "explore":
@@ -2663,6 +3577,24 @@ class Game:
             return ["任务：稳定认知", "提示：让记忆风暴自行散去"]
         if self.quest_stage == "archive_exit":
             return ["任务：收集残余日志", "目标：前往北侧电梯"]
+        if self.quest_stage == "logic_intro":
+            return ["任务：等待系统诊断"]
+        if self.quest_stage == "logic_relays":
+            return ["任务：恢复逻辑核心供电", "目标：按顺序激活三座主继电器"]
+        if self.quest_stage == "logic_terminal":
+            return ["任务：确认伦理委员会记录", "目标：读取终端并准备撤离"]
+        if self.quest_stage == "logic_exit":
+            return ["任务：前往神经下层", "目标：乘坐北侧电梯离开逻辑中心"]
+        if self.quest_stage == "resonator_intro":
+            return ["任务：稳定情感共鸣器", "目标：接近中央共鸣场"]
+        if self.quest_stage == "resonator_talk":
+            return ["任务：聆听情绪回声", "目标：与六位回声对话"]
+        if self.quest_stage == "resonator_boss":
+            return ["任务：击溃情绪污染源", "提示：注意情绪切换的攻击方式"]
+        if self.quest_stage == "resonator_log":
+            return ["任务：收集音频日志", "目标：读取共鸣器核心记录"]
+        if self.quest_stage == "resonator_exit":
+            return ["任务：前往下一层", "目标：乘坐北侧电梯离开共鸣器"]
         return []
 
     def _draw_player_health_hud(self) -> pygame.Rect:
@@ -2900,9 +3832,10 @@ class Game:
 
     def _set_quest_stage(self, stage: str) -> None:
         self.quest_stage = stage
-        if stage in {"elevator", "lab_exit"}:
+        if stage in {"elevator", "lab_exit", "resonator_log", "resonator_exit"}:
             self.elevator_locked = False
-        if stage in {"intro", "explore", "combat", "log", "lab_intro", "lab_path", "lab_choice", "lab_bypass", "lab_switch"}:
+        if stage in {"intro", "explore", "combat", "log", "lab_intro", "lab_path", "lab_choice", "lab_bypass", "lab_switch",
+                     "resonator_intro", "resonator_talk", "resonator_boss"}:
             self.elevator_locked = True
 
     def _draw_cutscene_dialog(self) -> None:

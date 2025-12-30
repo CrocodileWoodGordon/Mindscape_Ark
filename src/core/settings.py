@@ -16,6 +16,8 @@ MAP_FILES = {
     "F50": MAPS_DIR / "floor50.json",
     "F40": MAPS_DIR / "floor40.json",
     "F35": MAPS_DIR / "floor35.json",
+    "F30": MAPS_DIR / "floor30.json",
+    "F25": MAPS_DIR / "floor25.json",
 }
 START_FLOOR = "F50"
 
@@ -126,6 +128,8 @@ INTERACT_MASKS = {
     "F50": IMAGES_DIR / "Floor50_mask.png",
     "F40": None,
     "F35": None,
+    "F30": None,
+    "F25": None,
 }
 INTERACT_MASK_RADIUS = 12  # map pixels radius to consider near a red zone
 
@@ -145,6 +149,25 @@ INTERACT_ZONES = {
     "F35": [
         {"id": "archive_exit", "type": "exit", "rect": (300, 10, 340, 90), "to_floor": "F30"},
         {"id": "log_elara_audio", "type": "terminal", "rect": (292, 330, 348, 388)},
+    ],
+    "F30": [
+        {"id": "logic_exit", "type": "exit", "rect": (292, 12, 348, 84), "to_floor": "F25"},
+        {"id": "relay_left", "type": "switch", "rect": (188, 286, 236, 346)},
+        {"id": "relay_right", "type": "switch", "rect": (404, 286, 452, 346)},
+        {"id": "relay_center", "type": "switch", "rect": (296, 242, 344, 302)},
+        {"id": "log_ethics_73a", "type": "terminal", "rect": (72, 448, 160, 524)},
+        {"id": "logic_weapon_cache", "type": "switch", "rect": (520, 448, 596, 520)},
+    ],
+    "F25": [
+        {"id": "resonator_exit", "type": "exit", "rect": (148, 6, 172, 42), "to_floor": "F15"},
+        {"id": "resonator_npc_anger", "type": "npc", "rect": (84, 58, 126, 126)},
+        {"id": "resonator_npc_betrayal", "type": "npc", "rect": (204, 58, 246, 126)},
+        {"id": "resonator_npc_confusion", "type": "npc", "rect": (232, 130, 276, 196)},
+        {"id": "resonator_npc_despair", "type": "npc", "rect": (192, 200, 232, 272)},
+        {"id": "resonator_npc_sadness", "type": "npc", "rect": (88, 200, 128, 272)},
+        {"id": "resonator_npc_fear", "type": "npc", "rect": (52, 130, 104, 196)},
+        {"id": "resonator_core", "type": "switch", "rect": (148, 140, 172, 184)},
+        {"id": "log_kaines_045", "type": "terminal", "rect": (148, 140, 172, 184)},
     ],
 }
 
@@ -188,6 +211,7 @@ FLOOR_IMAGE_FILES = {
     "floor50": IMAGES_DIR / "Floor50.png",
     "floor40": IMAGES_DIR / "Floor40.png",
     "floor35": IMAGES_DIR / "Floor_35.png",
+    "floor30": None,
 }
 ARCHIVE_BOSS_IMAGE = IMAGES_DIR / "Floor_35_2.png"
 
