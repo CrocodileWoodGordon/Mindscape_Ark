@@ -13,8 +13,10 @@
 - Hardened the resource pipeline: NotoSansSC font preference, optional `boot_glitch.wav`, walk-cycle animation, and map loader improvements.
 - Constructed the Memory Archive (Floor 35): maze collision + map image, ambient anomaly spawns, multi-phase boss encounter, flashback sequence, and elevator/log gating into Floor 30.
 - Engineered the Logic Core (Floor 30): relay-sequencing puzzle, UI glitch vignette, failure feedback damage, weapon cache reward, ethics log gating, and elevator unlock toward Floor 25.
+- Implemented an ESC-driven pause menu overlay with selectable options, plus exit-to-desktop and return-to-title wiring.
 
 ## In Progress
+- Pause menu options for save/achievements are stubbed and awaiting full implementations.
 - Save system hooks are reserved via `data/saves` but persistence is not wired up.
 
 ## Next Up

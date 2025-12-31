@@ -1,6 +1,7 @@
 """Game lifecycle: start menu -> floor view."""
 
 import sys
+import json
 from pathlib import Path
 import random
 import math
@@ -9,10 +10,11 @@ from collections import deque
 import pygame
 
 from . import settings
-from ..systems.ui import StartMenu
+from ..systems.ui import PauseMenu, StartMenu
 from ..maps.loader import load_map, MapData
 from ..systems import collision
 from ..systems import pathfinding
+from ..systems import save_manager
 
 
 class Game:
@@ -25,6 +27,8 @@ class Game:
 
         self.start_menu = StartMenu(self.screen)
         self.in_menu = True
+        self.pause_menu = PauseMenu(self.screen)
+        self.pause_menu_active = False
 
         self.map_data: MapData | None = None
         self.map_surface: pygame.Surface | None = None
@@ -114,6 +118,13 @@ class Game:
         self.logic_overlay_timer = 0.0
         self.logic_overlay_text = ""
         self.logic_relay_positions: dict[str, tuple[float, float]] = {}
+        self.achievements: dict[str, bool] = {}
+        self.story_flags: dict[str, bool] = {}
+        self.max_floor_reached = self._floor_value(settings.START_FLOOR)
+        self._last_save_signature: str | None = None
+        self._last_save_path: Path | None = None
+        self._loading_save = False
+        self._save_check_timer = 0.0
         self.debug_press_times: list[float] = []
         self.debug_menu_active = False
         self.debug_menu_options: list[tuple[str, str]] = []
@@ -245,6 +256,7 @@ class Game:
             except Exception:
                 self.boot_sound = None
 
+        self._update_max_floor_reached(self.current_floor)
         self._on_floor_loaded()
 
     def _build_map_surface(self, data: MapData) -> pygame.Surface:
@@ -284,9 +296,12 @@ class Game:
 
     def _handle_event(self, event: pygame.event.Event) -> None:
         if self.in_menu:
-            if self.start_menu.handle_event(event):
-                self.in_menu = False
-                self._start_intro()
+            action = self.start_menu.handle_event(event)
+            if action == "start":
+                self._start_new_game()
+            elif action == "load":
+                if not self._load_latest_save():
+                    self.start_menu.show_notice("读取存档失败")
             return
         if self.intro_active:
             if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
@@ -295,6 +310,17 @@ class Game:
         if self.cutscene_active:
             if event.type in (pygame.KEYDOWN, pygame.MOUSEBUTTONDOWN):
                 self._advance_cutscene()
+            return
+        if self.pause_menu_active:
+            if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE and not self.pause_menu.confirm_action:
+                self._toggle_pause_menu(False)
+                return
+            if event.type == pygame.WINDOWFOCUSLOST:
+                self._reset_input_state()
+                return
+            action = self.pause_menu.handle_event(event)
+            if action:
+                self._handle_pause_action(action)
             return
         if self.debug_menu_active:
             self._handle_debug_menu_event(event)
@@ -305,7 +331,7 @@ class Game:
                 if self.debug_menu_active:
                     return
             if event.key == pygame.K_ESCAPE:
-                self.running = False
+                self._toggle_pause_menu(True)
                 return
             if self.player_dead:
                 if event.key == pygame.K_RETURN:
@@ -375,16 +401,238 @@ class Game:
             if event.button == 3:
                 self._handle_right_click(event.pos)
 
+    def _toggle_pause_menu(self, state: bool | None = None) -> None:
+        next_state = (not self.pause_menu_active) if state is None else state
+        if next_state == self.pause_menu_active:
+            return
+        self.pause_menu_active = next_state
+        if self.pause_menu_active:
+            self.pause_menu.reset()
+        self._reset_input_state()
+
+    def _reset_input_state(self) -> None:
+        self._keys_down.clear()
+        for key in self._held_dirs:
+            self._held_dirs[key] = False
+        self._conflict_x = False
+        self._conflict_y = False
+
+    def _handle_pause_action(self, action: str) -> None:
+        if action == "save":
+            self._pause_save_progress()
+        elif action == "quit":
+            if self._has_unsaved_progress():
+                self.pause_menu.open_confirm("quit")
+            else:
+                self._pause_exit_game()
+        elif action == "home":
+            if self._has_unsaved_progress():
+                self.pause_menu.open_confirm("home")
+            else:
+                self._pause_return_to_menu()
+        elif action == "confirm_quit":
+            self.pause_menu.close_confirm()
+            self._pause_exit_game()
+        elif action == "save_quit":
+            self.pause_menu.close_confirm()
+            if self._pause_save_progress():
+                self._pause_exit_game()
+        elif action == "confirm_home":
+            self.pause_menu.close_confirm()
+            self._pause_return_to_menu()
+        elif action == "save_home":
+            self.pause_menu.close_confirm()
+            if self._pause_save_progress():
+                self._pause_return_to_menu()
+        elif action == "cancel_confirm":
+            self.pause_menu.close_confirm()
+        elif action == "achievements":
+            self._pause_open_achievements()
+
+    def _pause_save_progress(self) -> bool:
+        current_signature = self._save_state_signature()
+        if self._last_save_signature and current_signature and current_signature == self._last_save_signature:
+            self.pause_menu.show_notice("已是最新存档")
+            return True
+        if not current_signature:
+            self.pause_menu.show_notice("存档失败")
+            return False
+        if self._write_save():
+            self.pause_menu.show_notice("存档成功")
+            return True
+        self.pause_menu.show_notice("存档失败")
+        return False
+
+    def _pause_exit_game(self) -> None:
+        self._toggle_pause_menu(False)
+        self.running = False
+
+    def _pause_return_to_menu(self) -> None:
+        self._toggle_pause_menu(False)
+        self._restart_to_menu()
+
+    def _pause_open_achievements(self) -> None:
+        pass
+
+    def _start_new_game(self) -> None:
+        self.pause_menu_active = False
+        self.in_menu = False
+        self.achievements = {}
+        self.story_flags = {}
+        self.speed_bonus = 1.0
+        self.unlocked_weapons = {settings.DEFAULT_WEAPON}
+        self.current_weapon = settings.DEFAULT_WEAPON
+        self.weapon_ammo = {}
+        self._prime_weapon_ammo(reset_all=True)
+        self.current_floor = settings.START_FLOOR
+        self.max_floor_reached = self._floor_value(self.current_floor)
+        self._last_save_signature = None
+        self._last_save_path = None
+        self._load_floor(settings.MAP_FILES[self.current_floor], preserve_health=False)
+        self._reset_input_state()
+        self._start_intro()
+
+    def _list_save_files(self) -> list[Path]:
+        return save_manager.list_save_files(settings.SAVES_DIR)
+
+    def _has_any_saves(self) -> bool:
+        return bool(self._list_save_files())
+
+    def _collect_save_state(self) -> dict:
+        return {
+            "current_floor": self.current_floor,
+            "max_floor_reached": self.max_floor_reached,
+            "quest_stage": self.quest_stage,
+            "player": {
+                "health": float(self.player_health),
+                "dead": bool(self.player_dead),
+                "pos": [int(self.player_rect.centerx), int(self.player_rect.centery)],
+            },
+            "unlocked_weapons": sorted(self.unlocked_weapons),
+            "current_weapon": self.current_weapon,
+            "weapon_ammo": {key: int(val) for key, val in self.weapon_ammo.items()},
+            "speed_bonus": float(self.speed_bonus),
+            "floor_flags": self.floor_flags,
+            "archive_flags": self.archive_flags,
+            "logic_flags": self.logic_flags,
+            "logic_progress": self.logic_progress,
+            "lab_branch": self.lab_branch,
+            "lab_npc_state": self.lab_npc_state,
+            "resonator_state": self.resonator_state,
+            "story_flags": self.story_flags,
+            "achievements": self.achievements,
+        }
+
+    def _save_state_signature_from_state(self, state: dict) -> str:
+        try:
+            return json.dumps(state, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+        except TypeError:
+            return ""
+
+    def _save_state_signature(self) -> str:
+        return self._save_state_signature_from_state(self._collect_save_state())
+
+    def _has_unsaved_progress(self) -> bool:
+        if self._last_save_signature is None:
+            return True
+        current = self._save_state_signature()
+        if not current:
+            return True
+        return current != self._last_save_signature
+
+    def _write_save(self) -> bool:
+        state = self._collect_save_state()
+        try:
+            path = save_manager.write_save(settings.SAVES_DIR, state)
+        except Exception:
+            self._show_dialog(["系统：存档失败。"], title="系统")
+            return False
+        self._last_save_path = path
+        self._last_save_signature = self._save_state_signature_from_state(state)
+        return True
+
+    def _load_latest_save(self) -> bool:
+        for save_path in self._list_save_files():
+            data = save_manager.load_save(save_path)
+            if not data:
+                continue
+            self._apply_save_state(data)
+            self._last_save_path = save_path
+            self._last_save_signature = self._save_state_signature()
+            self.in_menu = False
+            self.pause_menu_active = False
+            self.intro_active = False
+            self.cutscene_active = False
+            self._reset_input_state()
+            return True
+        return False
+
+    def _apply_save_state(self, data: dict) -> None:
+        self._loading_save = True
+        self.achievements = dict(data.get("achievements", {}))
+        self.story_flags = dict(data.get("story_flags", {}))
+        self.speed_bonus = float(data.get("speed_bonus", 1.0))
+
+        floor_id = data.get("current_floor", settings.START_FLOOR)
+        if floor_id not in settings.MAP_FILES:
+            floor_id = settings.START_FLOOR
+        self.current_floor = floor_id
+        self._load_floor(settings.MAP_FILES[self.current_floor], preserve_health=False)
+
+        self.unlocked_weapons = set(data.get("unlocked_weapons", [settings.DEFAULT_WEAPON]))
+        if not self.unlocked_weapons:
+            self.unlocked_weapons = {settings.DEFAULT_WEAPON}
+        self.current_weapon = data.get("current_weapon", settings.DEFAULT_WEAPON)
+        if self.current_weapon not in self.unlocked_weapons:
+            self.current_weapon = settings.DEFAULT_WEAPON
+            self.unlocked_weapons.add(self.current_weapon)
+        self.weapon_ammo = {key: int(val) for key, val in data.get("weapon_ammo", {}).items()}
+        self._prime_weapon_ammo(reset_all=False)
+
+        stage = data.get("quest_stage", self.quest_stage)
+        self._set_quest_stage(stage)
+        self.floor_flags = dict(data.get("floor_flags", {}))
+        self.archive_flags = dict(data.get("archive_flags", {}))
+        self.logic_flags = dict(data.get("logic_flags", {}))
+        self.logic_progress = list(data.get("logic_progress", []))
+        self.lab_branch = str(data.get("lab_branch", self.lab_branch))
+        self.lab_npc_state = dict(data.get("lab_npc_state", {}))
+        resonator_state = data.get("resonator_state")
+        if isinstance(resonator_state, dict):
+            self.resonator_state = resonator_state
+            if self.current_floor == "F25":
+                self._resonator_load_assets()
+        self.max_floor_reached = max(
+            self._floor_value(self.current_floor),
+            int(data.get("max_floor_reached", self.max_floor_reached)),
+        )
+
+        player = data.get("player", {})
+        pos = player.get("pos")
+        if isinstance(pos, (list, tuple)) and len(pos) >= 2:
+            self.player_rect.center = (int(pos[0]), int(pos[1]))
+        health = float(player.get("health", self.player_health_max))
+        self.player_health = max(0.0, min(health, float(self.player_health_max)))
+        self.player_dead = bool(player.get("dead", False)) or self.player_health <= 0.0
+        self._loading_save = False
+
     def _update(self, dt: float) -> None:
         if self.in_menu:
+            self._save_check_timer = max(0.0, self._save_check_timer - dt)
+            if self._save_check_timer == 0.0:
+                self.start_menu.set_save_available(self._has_any_saves())
+                self._save_check_timer = 0.5
             self.start_menu.update(dt)
         elif self.intro_active:
             self._update_intro(dt)
         elif self.cutscene_active:
             self._update_cutscene(dt)
+        elif self.pause_menu_active:
+            self.pause_menu.update(dt)
         else:
             self._update_play(dt)
-        self._update_dialog(dt)
+        if not self.pause_menu_active:
+            self._update_dialog(dt)
 
     def _update_play(self, dt: float) -> None:  # noqa: ARG002
         if not self.map_data:
@@ -505,6 +753,16 @@ class Game:
             self._enter_floor_f25()
         else:
             self._enter_floor_default()
+
+    def _floor_value(self, floor_id: str) -> int:
+        if floor_id.startswith("F") and floor_id[1:].isdigit():
+            return int(floor_id[1:])
+        return 0
+
+    def _update_max_floor_reached(self, floor_id: str) -> None:
+        value = self._floor_value(floor_id)
+        if value > self.max_floor_reached:
+            self.max_floor_reached = value
 
     def _enter_floor_default(self) -> None:
         if self.current_floor == "F50":
@@ -2262,6 +2520,11 @@ class Game:
             self._draw_cutscene_dialog()
             pygame.display.flip()
             return
+        if self.pause_menu_active:
+            self._render_play_base()
+            self.pause_menu.draw()
+            pygame.display.flip()
+            return
         self._render_play_base()
         pygame.display.flip()
 
@@ -2854,9 +3117,19 @@ class Game:
 
     def _restart_to_menu(self) -> None:
         self.start_menu.reset()
+        self.pause_menu_active = False
+        self.intro_active = False
         self.unlocked_weapons = {settings.DEFAULT_WEAPON}
         self.current_weapon = settings.DEFAULT_WEAPON
+        self.weapon_ammo = {}
+        self._prime_weapon_ammo(reset_all=True)
+        self.speed_bonus = 1.0
+        self.achievements = {}
+        self.story_flags = {}
+        self._last_save_signature = None
+        self._last_save_path = None
         self.current_floor = settings.START_FLOOR
+        self.max_floor_reached = self._floor_value(self.current_floor)
         self._load_floor(settings.MAP_FILES[self.current_floor], preserve_health=False)
         self.in_menu = True
 

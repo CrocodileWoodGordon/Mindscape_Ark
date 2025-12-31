@@ -10,7 +10,7 @@ MAPS_DIR = ASSETS_ROOT / "maps"
 AUDIO_DIR = ASSETS_ROOT / "audio"
 FONTS_DIR = ASSETS_ROOT / "fonts"
 DATA_DIR = BASE_DIR / "data"
-SAVES_DIR = DATA_DIR / "saves"
+SAVES_DIR = BASE_DIR / "save"
 DEFAULT_MAP_PATH = MAPS_DIR / "floor50.json"
 MAP_FILES = {
     "F50": MAPS_DIR / "floor50.json",
