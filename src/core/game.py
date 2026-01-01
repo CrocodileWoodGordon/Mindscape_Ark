@@ -61,6 +61,9 @@ class Game:
         self.interaction_target: dict | None = None
         self.dialog_lines: list[str] = []
         self.dialog_timer: float = 0.0
+        self.ambient_dialog_lines: list[str] = []
+        self.ambient_dialog_timer: float = 0.0
+        self.ambient_dialog_title: str = ""
         self.click_fx_pos: tuple[int, int] | None = None
         self.click_fx_timer: float = 0.0
         self._conflict_x = False
@@ -122,6 +125,8 @@ class Game:
         self.resonator_assets: dict[str, pygame.Surface] = {}
         self.resonator_state: dict[str, object] = {}
         self.resonator_projectiles: list[dict] = []
+        self.sanctuary_state: dict[str, object] = {}
+        self.aera_sprite: pygame.Surface | None = None
         self.logic_flags: dict[str, bool] = {}
         self.logic_sequence: list[str] = []
         self.logic_progress: list[str] = []
@@ -174,6 +179,9 @@ class Game:
         self.interaction_target = None
         self.dialog_lines = []
         self.dialog_timer = 0.0
+        self.ambient_dialog_lines = []
+        self.ambient_dialog_timer = 0.0
+        self.ambient_dialog_title = ""
         self.click_fx_pos = None
         self.click_fx_timer = 0.0
         self._conflict_x = False
@@ -229,6 +237,8 @@ class Game:
         self.archive_projectiles = []
         self.resonator_projectiles = []
         self.resonator_state = {}
+        self.sanctuary_state = {}
+        self.aera_sprite = None
         self.archive_flash_sequence = []
         self.archive_pulse_state = {}
         self.archive_flash_active = False
@@ -639,6 +649,7 @@ class Game:
             "lab_branch": self.lab_branch,
             "lab_npc_state": self.lab_npc_state,
             "resonator_state": self.resonator_state,
+            "sanctuary_state": self.sanctuary_state,
             "story_flags": self.story_flags,
             "achievements": self.achievements,
         }
@@ -696,6 +707,9 @@ class Game:
         self.achievements = dict(data.get("achievements", {}))
         self.story_flags = dict(data.get("story_flags", {}))
         self.speed_bonus = float(data.get("speed_bonus", 1.0))
+        self.ambient_dialog_lines = []
+        self.ambient_dialog_timer = 0.0
+        self.ambient_dialog_title = ""
 
         floor_id = data.get("current_floor", settings.START_FLOOR)
         if floor_id not in settings.MAP_FILES:
@@ -726,6 +740,11 @@ class Game:
             self.resonator_state = resonator_state
             if self.current_floor == "F25":
                 self._resonator_load_assets()
+        sanctuary_state = data.get("sanctuary_state")
+        if isinstance(sanctuary_state, dict):
+            self.sanctuary_state = sanctuary_state
+            if self.current_floor == "F10":
+                self.aera_sprite = self._load_aera_sprite()
         self.max_floor_reached = max(
             self._floor_value(self.current_floor),
             int(data.get("max_floor_reached", self.max_floor_reached)),
@@ -763,6 +782,7 @@ class Game:
             self._update_achievement_notice(dt)
         if not self.pause_menu_active:
             self._update_dialog(dt)
+            self._update_ambient_dialog(dt)
 
     def _update_play(self, dt: float) -> None:  # noqa: ARG002
         if not self.map_data:
@@ -881,12 +901,16 @@ class Game:
             self._enter_floor_f30()
         elif self.current_floor == "F25":
             self._enter_floor_f25()
+        elif self.current_floor == "F10":
+            self._enter_floor_f10()
         else:
             self._enter_floor_default()
 
     def _resolve_map_scale(self) -> int:
         if self.current_floor == "F30":
             return max(1, settings.MAP_SCALE // 3)
+        if self.current_floor == "F10":
+            return max(1, settings.MAP_SCALE // 2)
         return settings.MAP_SCALE
 
     def _floor_value(self, floor_id: str) -> int:
@@ -1022,6 +1046,310 @@ class Game:
         self.resonator_state["npcs"] = self._resonator_entities()
         self._set_quest_stage("resonator_intro")
         self.floor_timers["resonator_intro_delay"] = 0.6
+
+    def _enter_floor_f10(self) -> None:
+        if not self.map_data:
+            return
+        core_pos = self._snap_to_passable(483.0, 483.0, max_steps=24)
+        aera_pos = self._snap_to_passable(489.0, 501.0, max_steps=24)
+        self.sanctuary_state = {
+            "intro_timer": 0.6,
+            "intro_shown": False,
+            "decision_timer": 120.0,
+            "defense_active": False,
+            "wave_index": 0,
+            "wave_total": 5,
+            "wave_active": False,
+            "next_wave_timer": 0.0,
+            "exit_unlocked": False,
+            "branch": None,
+            "aera_state": "active",
+            "aera_map_pos": aera_pos,
+            "aera_pos": (aera_pos[0] * self.map_scale, aera_pos[1] * self.map_scale),
+            "aera_fire_timer": 0.6,
+            "shout_timer": 4.5,
+            "shout_index": 0,
+            "core_pos": core_pos,
+            "core_pos_scaled": (core_pos[0] * self.map_scale, core_pos[1] * self.map_scale),
+            "particles": [],
+            "dissolve_timer": 0.0,
+            "battle_complete": False,
+        }
+        self.aera_sprite = self._load_aera_sprite()
+        self.combat_active = False
+        self.elevator_locked = True
+        self._set_quest_stage("sanctuary_agent")
+
+    def _start_sanctuary_defense(self) -> None:
+        state = self.sanctuary_state
+        if not state or state.get("defense_active") or state.get("branch"):
+            return
+        state["defense_active"] = True
+        state["wave_index"] = 0
+        state["wave_active"] = False
+        state["next_wave_timer"] = 0.4
+        state["decision_timer"] = 0.0
+        self.combat_active = True
+        self._set_quest_stage("sanctuary_agent")
+        self._show_ambient_dialog([
+            "艾拉：别靠近我！守住核心装置！",
+            "系统净化者正在逼近！"
+        ], title="艾拉", lifetime=5.0)
+
+    def _sanctuary_spawn_wave(self) -> None:
+        if not self.map_data or not self.sanctuary_state:
+            return
+        core_pos = self.sanctuary_state.get("core_pos", (0.0, 0.0))
+        cell_size = self.map_data.cell_size
+        grid_w, grid_h = self.map_data.grid_size
+        core_cell = (
+            max(0, min(grid_w - 1, int(core_pos[0] // cell_size))),
+            max(0, min(grid_h - 1, int(core_pos[1] // cell_size))),
+        )
+        accessible = self._collect_accessible_cells(core_cell, 80)
+        if not accessible:
+            return
+        taken_cells: set[tuple[int, int]] = {core_cell}
+        offsets = [(-12, 0), (12, 0), (0, -12), (0, 12), (-10, 10), (10, -10), (10, 10), (-10, -10)]
+        spawned: list[dict] = []
+        cell_px = self.map_data.cell_size * self.map_scale
+        max_cell_distance = 20
+        for ox, oy in offsets:
+            if len(spawned) >= 5:
+                break
+            desired = (
+                max(0, min(grid_w - 1, core_cell[0] + ox)),
+                max(0, min(grid_h - 1, core_cell[1] + oy)),
+            )
+            spawn_cell = self._pick_spawn_cell(desired, accessible, taken_cells, max_cell_distance)
+            if not spawn_cell:
+                continue
+            taken_cells.add(spawn_cell)
+            cx = spawn_cell[0] * cell_px + cell_px // 2
+            cy = spawn_cell[1] * cell_px + cell_px // 2
+            hp = float(settings.PLAYER_BULLET_DAMAGE * 4)
+            spawned.append({
+                "x": float(cx),
+                "y": float(cy),
+                "hp": hp,
+                "max_hp": hp,
+                "state": "idle",
+                "fade_timer": settings.ENEMY_FADE_DURATION,
+                "flash_timer": 0.0,
+                "aggro": False,
+                "aggro_radius": 520 * self.map_scale,
+                "lose_radius": 680 * self.map_scale,
+                "move_speed": settings.ENEMY_MOVE_SPEED * 1.15,
+                "show_health": 0.0,
+                "attack_timer": random.uniform(0.3, settings.ENEMY_ATTACK_COOLDOWN),
+                "attack_anim_timer": 0.0,
+                "color": (230, 235, 245),
+            })
+        if len(spawned) < 5:
+            for cell in accessible:
+                if len(spawned) >= 5:
+                    break
+                if cell in taken_cells:
+                    continue
+                taken_cells.add(cell)
+                cx = cell[0] * cell_px + cell_px // 2
+                cy = cell[1] * cell_px + cell_px // 2
+                hp = float(settings.PLAYER_BULLET_DAMAGE * 4)
+                spawned.append({
+                    "x": float(cx),
+                    "y": float(cy),
+                    "hp": hp,
+                    "max_hp": hp,
+                    "state": "idle",
+                    "fade_timer": settings.ENEMY_FADE_DURATION,
+                    "flash_timer": 0.0,
+                    "aggro": False,
+                    "aggro_radius": 520 * self.map_scale,
+                    "lose_radius": 680 * self.map_scale,
+                    "move_speed": settings.ENEMY_MOVE_SPEED * 1.15,
+                    "show_health": 0.0,
+                    "attack_timer": random.uniform(0.3, settings.ENEMY_ATTACK_COOLDOWN),
+                    "attack_anim_timer": 0.0,
+                    "color": (230, 235, 245),
+                })
+        self.enemies = spawned
+
+    def _update_floor_f10(self, dt: float) -> None:
+        if not self.sanctuary_state:
+            return
+        state = self.sanctuary_state
+        if not state.get("intro_shown") and state.get("aera_state") == "active":
+            timer = float(state.get("intro_timer", 0.0)) - dt
+            if timer <= 0.0:
+                state["intro_shown"] = True
+                self._show_ambient_dialog([
+                    "Custodian! You're here! We've found evidence, the System is--"
+                ], title="艾拉", lifetime=5.0)
+            else:
+                state["intro_timer"] = timer
+
+        if state.get("aera_state") == "dissolving":
+            self._update_aera_dissolve(dt)
+
+        if not state.get("branch") and not state.get("defense_active"):
+            decision_timer = float(state.get("decision_timer", 0.0)) - dt
+            if decision_timer <= 0.0:
+                state["decision_timer"] = 0.0
+                self._start_sanctuary_defense()
+            else:
+                state["decision_timer"] = decision_timer
+
+        if state.get("defense_active") and not state.get("battle_complete"):
+            if state.get("wave_active") and not self.enemies:
+                state["wave_active"] = False
+                state["wave_index"] = int(state.get("wave_index", 0)) + 1
+                state["next_wave_timer"] = 1.6
+                if state["wave_index"] >= state.get("wave_total", 0):
+                    self._finish_sanctuary_defense()
+            if not state.get("wave_active") and not state.get("battle_complete"):
+                timer = float(state.get("next_wave_timer", 0.0)) - dt
+                if timer <= 0.0 and state.get("wave_index", 0) < state.get("wave_total", 0):
+                    state["wave_active"] = True
+                    state["next_wave_timer"] = 0.0
+                    self._sanctuary_spawn_wave()
+                else:
+                    state["next_wave_timer"] = max(0.0, timer)
+            self._sanctuary_update_shouts(dt)
+            self._sanctuary_update_aera_fire(dt)
+
+    def _sanctuary_update_shouts(self, dt: float) -> None:
+        state = self.sanctuary_state
+        if not state or state.get("aera_state") != "active":
+            return
+        if self.ambient_dialog_lines:
+            state["shout_timer"] = max(0.0, float(state.get("shout_timer", 0.0)) - dt)
+            return
+        timer = float(state.get("shout_timer", 0.0)) - dt
+        if timer > 0.0:
+            state["shout_timer"] = timer
+            return
+        lines = [
+            ("艾拉", "我们能守住它！坚持住！"),
+            ("指引者", "效率偏差：建议使用认知溶解剂。"),
+            ("艾拉", "别退！核心在这里！"),
+            ("指引者", "再次提示：注射认知溶解剂可提高完成率。"),
+        ]
+        idx = int(state.get("shout_index", 0)) % len(lines)
+        title, text = lines[idx]
+        state["shout_index"] = idx + 1
+        state["shout_timer"] = random.uniform(7.0, 10.5)
+        self._show_ambient_dialog([text], title=title, lifetime=5.0)
+
+    def _sanctuary_update_aera_fire(self, dt: float) -> None:
+        state = self.sanctuary_state
+        if not state or state.get("aera_state") != "active":
+            return
+        if not self.enemies:
+            state["aera_fire_timer"] = max(0.0, float(state.get("aera_fire_timer", 0.0)) - dt)
+            return
+        timer = float(state.get("aera_fire_timer", 0.0)) - dt
+        if timer > 0.0:
+            state["aera_fire_timer"] = timer
+            return
+        ax, ay = state.get("aera_pos", (0.0, 0.0))
+        target = min(self.enemies, key=lambda e: (e.get("x", 0.0) - ax) ** 2 + (e.get("y", 0.0) - ay) ** 2)
+        dx = target.get("x", 0.0) - ax
+        dy = target.get("y", 0.0) - ay
+        dist = math.hypot(dx, dy)
+        max_range = 520 * self.map_scale
+        if dist <= 0.0 or dist > max_range:
+            state["aera_fire_timer"] = 0.6
+            return
+        weapon_cfg = settings.WEAPON_DEFS.get("sidearm", {})
+        speed = float(weapon_cfg.get("bullet_speed", settings.GUN_BULLET_SPEED))
+        ttl = float(weapon_cfg.get("bullet_lifetime", settings.GUN_BULLET_LIFETIME))
+        radius = int(weapon_cfg.get("bullet_radius", settings.GUN_BULLET_RADIUS))
+        damage = float(weapon_cfg.get("damage", settings.PLAYER_BULLET_DAMAGE)) * 0.6
+        self.bullets.append({
+            "x": float(ax),
+            "y": float(ay),
+            "vx": dx / dist * speed,
+            "vy": dy / dist * speed,
+            "ttl": ttl,
+            "radius": radius,
+            "color": (170, 210, 255),
+            "damage": damage,
+        })
+        state["aera_fire_timer"] = 0.6
+
+    def _trigger_aera_dissolve(self) -> None:
+        state = self.sanctuary_state
+        if not state or state.get("aera_state") != "active":
+            return
+        state["branch"] = "comply"
+        state["intro_shown"] = True
+        state["defense_active"] = False
+        state["battle_complete"] = False
+        state["wave_active"] = False
+        state["wave_index"] = 0
+        self._dismiss_ambient_dialog()
+        self.enemies.clear()
+        self.combat_active = False
+        state["aera_state"] = "dissolving"
+        duration = 1.3
+        state["dissolve_timer"] = duration
+        ax, ay = state.get("aera_pos", (0.0, 0.0))
+        particles: list[dict] = []
+        for _ in range(36):
+            angle = random.uniform(0.0, math.tau)
+            speed = random.uniform(30.0, 90.0)
+            particles.append({
+                "x": float(ax),
+                "y": float(ay),
+                "vx": math.cos(angle) * speed,
+                "vy": math.sin(angle) * speed,
+                "life": duration,
+                "max_life": duration,
+                "size": random.randint(2, 4),
+            })
+        state["particles"] = particles
+
+    def _update_aera_dissolve(self, dt: float) -> None:
+        state = self.sanctuary_state
+        if not state:
+            return
+        timer = float(state.get("dissolve_timer", 0.0)) - dt
+        state["dissolve_timer"] = max(0.0, timer)
+        particles = []
+        for p in state.get("particles", []):
+            life = float(p.get("life", 0.0)) - dt
+            if life <= 0.0:
+                continue
+            p["life"] = life
+            p["x"] += p.get("vx", 0.0) * dt
+            p["y"] += p.get("vy", 0.0) * dt
+            particles.append(p)
+        state["particles"] = particles
+        if state["dissolve_timer"] <= 0.0 and not particles:
+            state["aera_state"] = "gone"
+            state["exit_unlocked"] = True
+            self.elevator_locked = False
+            self._set_quest_stage("sanctuary_exit")
+            self.story_flags["aera_dissolved"] = True
+            self._show_ambient_dialog(["Efficient. Data integrity at 98%."], title="系统", lifetime=5.0)
+            if "efficiency_expert" in self.achievement_ids:
+                self._unlock_achievement("efficiency_expert")
+
+    def _finish_sanctuary_defense(self) -> None:
+        state = self.sanctuary_state
+        if not state or state.get("battle_complete"):
+            return
+        state["battle_complete"] = True
+        state["defense_active"] = False
+        state["exit_unlocked"] = True
+        state["branch"] = "defy"
+        self.combat_active = False
+        self.elevator_locked = False
+        self._set_quest_stage("sanctuary_done")
+        self.story_flags["aera_defended"] = True
+        self._show_ambient_dialog(["Thank you... for believing in us."], title="艾拉", lifetime=5.0)
+        if "humanitarian" in self.achievement_ids:
+            self._unlock_achievement("humanitarian")
 
     def _enter_floor_f40(self) -> None:
         self._set_quest_stage("lab_intro")
@@ -1551,6 +1879,8 @@ class Game:
             self._update_floor_f30(dt)
         elif self.current_floor == "F25":
             self._update_floor_f25(dt)
+        elif self.current_floor == "F10":
+            self._update_floor_f10(dt)
 
     def _update_floor_f30(self, dt: float) -> None:
         if not self.map_data:
@@ -1725,6 +2055,7 @@ class Game:
             "F35": "Floor 35 - Memory Archive",
             "F30": "Floor 30 - Logic Core",
             "F25": "Floor 25 - Pathos Resonator",
+            "F10": "Floor 10 - Sanctuary",
         }
         options: list[tuple[str, str]] = []
         for code in settings.MAP_FILES.keys():
@@ -2264,6 +2595,9 @@ class Game:
         if self.current_floor == "F25":
             self._handle_resonator_npc(trig)
             return
+        if self.current_floor == "F10":
+            self._handle_sanctuary_aera(trig)
+            return
         if self.current_floor != "F40":
             self._show_dialog(["没有回应。"], title="提示")
             return
@@ -2358,6 +2692,14 @@ class Game:
         if boss_state == "defeated":
             self._show_dialog(["核心已熄灭，只留下微弱的余温。"], title="系统")
             return
+
+    def _handle_sanctuary_aera(self, trig: dict) -> None:
+        state = self.sanctuary_state
+        if not state or state.get("aera_state") != "active":
+            return
+        if state.get("battle_complete"):
+            return
+        self._trigger_aera_dissolve()
 
     def _resonator_start_boss(self) -> None:
         if not self.resonator_state:
@@ -2540,6 +2882,48 @@ class Game:
         self._draw_resonator_projectiles()
         self._draw_resonator_npcs()
 
+    def _draw_sanctuary_environment(self) -> None:
+        if not self.sanctuary_state:
+            return
+        state = self.sanctuary_state
+        ox, oy = self.map_offset
+        core_pos = state.get("core_pos_scaled", (0.0, 0.0))
+        cx = int(core_pos[0] + ox)
+        cy = int(core_pos[1] + oy)
+        core_radius = int(16 * self.map_scale)
+        if core_radius > 0:
+            pygame.draw.circle(self.screen, (40, 100, 160), (cx, cy), max(6, core_radius))
+            pygame.draw.circle(self.screen, (150, 220, 255), (cx, cy), max(6, core_radius), width=2)
+
+        if state.get("aera_state") != "gone":
+            ax, ay = state.get("aera_pos", (0.0, 0.0))
+            sx = int(ax + ox)
+            sy = int(ay + oy)
+            sprite = self.aera_sprite
+            if sprite:
+                draw_sprite = sprite
+                if state.get("aera_state") == "dissolving":
+                    duration = 1.3
+                    remain = float(state.get("dissolve_timer", 0.0))
+                    alpha = int(255 * max(0.0, min(1.0, remain / duration)))
+                    draw_sprite = sprite.copy()
+                    draw_sprite.set_alpha(alpha)
+                rect = draw_sprite.get_rect(center=(sx, sy))
+                self.screen.blit(draw_sprite, rect)
+            else:
+                pygame.draw.circle(self.screen, (240, 230, 210), (sx, sy), int(14 * self.map_scale))
+
+        for p in state.get("particles", []):
+            px = int(p.get("x", 0.0) + ox)
+            py = int(p.get("y", 0.0) + oy)
+            life = float(p.get("life", 0.0))
+            max_life = float(p.get("max_life", 1.0))
+            alpha = int(220 * max(0.0, min(1.0, life / max_life)))
+            size = int(p.get("size", 2))
+            surf = pygame.Surface((size, size), pygame.SRCALPHA)
+            surf.fill((0, 0, 0, alpha))
+            self.screen.blit(surf, (px - size // 2, py - size // 2))
+
     def _draw_resonator_npcs(self) -> None:
         if not self.resonator_state:
             return
@@ -2685,6 +3069,8 @@ class Game:
             self._draw_logic_environment()
         elif self.current_floor == "F25":
             self._draw_resonator_environment()
+        elif self.current_floor == "F10":
+            self._draw_sanctuary_environment()
         self._draw_enemy_attack_fx()
         self._draw_enemies()
         self._draw_bullets()
@@ -2706,6 +3092,7 @@ class Game:
         self._draw_reload_bar(ammo_rect)
         self._draw_prompt()
         self._draw_dialog()
+        self._draw_ambient_dialog()
         self._draw_debug_coords()
         self._draw_click_feedback()
         if self.debug_menu_active:
@@ -2717,6 +3104,19 @@ class Game:
             w, h = sprite.get_size()
             return pygame.transform.scale(sprite, (int(w * settings.PLAYER_SCALE), int(h * settings.PLAYER_SCALE)))
         return None
+
+    def _load_aera_sprite(self) -> pygame.Surface | None:
+        path = settings.IMAGES_DIR / "aera.png"
+        if not path.exists():
+            return None
+        try:
+            sprite = pygame.image.load(str(path)).convert_alpha()
+        except Exception:
+            return None
+        if self.map_scale != 1:
+            w, h = sprite.get_size()
+            sprite = pygame.transform.scale(sprite, (int(w * self.map_scale), int(h * self.map_scale)))
+        return sprite
 
     def _load_archive_boss_sprite(self) -> pygame.Surface | None:
         path = getattr(settings, "ARCHIVE_BOSS_IMAGE", None)
@@ -3302,9 +3702,6 @@ class Game:
         removed_any = False
         any_aggro = False
         px, py = self.player_rect.center
-        aggro_sq = settings.ENEMY_AGGRO_RADIUS ** 2
-        lose_sq = settings.ENEMY_LOSE_INTEREST_RADIUS ** 2
-        attack_range = settings.ENEMY_ATTACK_RANGE
         for enemy in self.enemies:
             enemy.setdefault("hp", float(settings.ENEMY_MAX_HEALTH))
             enemy.setdefault("max_hp", float(settings.ENEMY_MAX_HEALTH))
@@ -3325,6 +3722,14 @@ class Game:
                     continue
                 remaining.append(enemy)
                 continue
+
+            aggro_radius = float(enemy.get("aggro_radius", settings.ENEMY_AGGRO_RADIUS))
+            lose_radius = float(enemy.get("lose_radius", settings.ENEMY_LOSE_INTEREST_RADIUS))
+            aggro_sq = aggro_radius ** 2
+            lose_sq = lose_radius ** 2
+            attack_range = float(enemy.get("attack_range", settings.ENEMY_ATTACK_RANGE))
+            move_speed = float(enemy.get("move_speed", settings.ENEMY_MOVE_SPEED))
+            attack_damage = float(enemy.get("attack_damage", settings.ENEMY_ATTACK_DAMAGE))
 
             dx = px - enemy["x"]
             dy = py - enemy["y"]
@@ -3355,14 +3760,14 @@ class Game:
             enemy["attack_timer"] = max(0.0, enemy.get("attack_timer", 0.0) - dt)
 
             if dist > attack_range and not self.player_dead:
-                step = settings.ENEMY_MOVE_SPEED * dt
+                step = move_speed * dt
                 if step > 0:
                     move_x = int(round(dx / dist * step))
                     move_y = int(round(dy / dist * step))
                     if move_x or move_y:
                         self._move_enemy(enemy, move_x, move_y)
             elif dist <= attack_range and enemy["attack_timer"] <= 0.0:
-                self._apply_player_damage(settings.ENEMY_ATTACK_DAMAGE)
+                self._apply_player_damage(attack_damage)
                 enemy["attack_timer"] = settings.ENEMY_ATTACK_COOLDOWN
                 enemy["state"] = "attacking"
                 enemy["attack_anim_timer"] = settings.ENEMY_ATTACK_ANIM_TIME
@@ -3379,7 +3784,7 @@ class Game:
     def _move_enemy(self, enemy: dict, dx: int, dy: int) -> None:
         if not self.map_data or (dx == 0 and dy == 0):
             return
-        r = settings.ENEMY_RADIUS
+        r = int(enemy.get("radius", settings.ENEMY_RADIUS))
         collider = pygame.Rect(0, 0, r * 2, r * 2)
         collider.center = (int(enemy.get("x", 0.0)), int(enemy.get("y", 0.0)))
         moved = collision.move_with_collision(
@@ -3686,6 +4091,9 @@ class Game:
         if self.current_floor == "F40":
             self._lab_on_enemies_cleared()
             return
+        if self.current_floor == "F10" and self.sanctuary_state.get("defense_active"):
+            self.combat_active = True
+            return
         self._set_quest_stage("log")
         self._show_dialog(["异常源已清除，终端恢复可用。"], title="系统")
 
@@ -3701,8 +4109,8 @@ class Game:
             sx = int(enemy["x"] + ox)
             sy = int(enemy["y"] + oy)
             state = enemy.get("state", "idle")
-            color = flash_color if enemy.get("flash_timer", 0.0) > 0.0 else base_color
-            draw_r = base_radius
+            color = flash_color if enemy.get("flash_timer", 0.0) > 0.0 else enemy.get("color", base_color)
+            draw_r = int(enemy.get("radius", base_radius))
             alpha = 255
             if state == "dying":
                 fade = max(0.0, min(fade_total, enemy.get("fade_timer", 0.0)))
@@ -3878,6 +4286,8 @@ class Game:
                 return not npc_state.get("hostile", False)
             if self.current_floor == "F25":
                 return self.resonator_state.get("boss_state") != "active"
+            if self.current_floor == "F10":
+                return bool(self.sanctuary_state) and self.sanctuary_state.get("aera_state") == "active" and not self.sanctuary_state.get("battle_complete", False)
             return True
         if t == "exit":
             if self.current_floor == "F35":
@@ -3886,6 +4296,8 @@ class Game:
                 return self.logic_flags.get("exit_unlocked", False)
             if self.current_floor == "F25":
                 return self.resonator_state.get("exit_unlocked", False)
+            if self.current_floor == "F10":
+                return self.sanctuary_state.get("exit_unlocked", False)
             return True
         return True
 
@@ -3927,6 +4339,8 @@ class Game:
         if t == "switch":
             return "按F启动"
         if t == "npc":
+            if self.current_floor == "F10" and trig.get("id") == "aera":
+                return "按F使用认知溶解剂"
             return "按F交流"
         return "按F互动"
 
@@ -3944,6 +4358,9 @@ class Game:
                 return
             if self.current_floor == "F25" and (self.elevator_locked or not self.resonator_state.get("exit_unlocked", False)):
                 self._show_dialog(["系统：共鸣场尚未稳定，电梯无法启动。"], title="系统")
+                return
+            if self.current_floor == "F10" and (self.elevator_locked or not self.sanctuary_state.get("exit_unlocked", False)):
+                self._show_ambient_dialog(["系统：电梯权限尚未解锁。"], title="系统", lifetime=4.0)
                 return
             next_floor = trig["to_floor"]
             if next_floor in settings.MAP_FILES:
@@ -4064,11 +4481,31 @@ class Game:
         self.dialog_timer = 0.0
         self.dialog_title = ""
 
+    def _show_ambient_dialog(self, lines: list[str], *, title: str = "", lifetime: float = 5.0) -> None:
+        self.ambient_dialog_lines = lines
+        self.ambient_dialog_title = title
+        self.ambient_dialog_timer = max(0.0, float(lifetime))
+
+    def _dismiss_ambient_dialog(self) -> None:
+        if not self.ambient_dialog_lines:
+            self.ambient_dialog_timer = 0.0
+            self.ambient_dialog_title = ""
+            return
+        self.ambient_dialog_lines = []
+        self.ambient_dialog_timer = 0.0
+        self.ambient_dialog_title = ""
+
     def _update_dialog(self, dt: float) -> None:
         if self.dialog_timer > 0:
             self.dialog_timer = max(0.0, self.dialog_timer - dt)
             if self.dialog_timer <= 0.0 and self.dialog_lines:
                 self._dismiss_dialog()
+
+    def _update_ambient_dialog(self, dt: float) -> None:
+        if self.ambient_dialog_timer > 0.0:
+            self.ambient_dialog_timer = max(0.0, self.ambient_dialog_timer - dt)
+            if self.ambient_dialog_timer <= 0.0 and self.ambient_dialog_lines:
+                self._dismiss_ambient_dialog()
 
     def _draw_prompt(self) -> None:
         if not self.interaction_target:
@@ -4101,6 +4538,27 @@ class Game:
             y_base += title_surf.get_height() + 10
         line_gap = 6
         for line in self.dialog_lines:
+            ln_surf = self.font_dialog.render(line, True, settings.DIALOG_TEXT)
+            self.screen.blit(ln_surf, (pad_x, y_base))
+            y_base += ln_surf.get_height() + line_gap
+
+    def _draw_ambient_dialog(self) -> None:
+        if self.dialog_lines or not self.ambient_dialog_lines:
+            return
+        overlay_h = int(settings.WINDOW_HEIGHT * settings.DIALOG_OVERLAY_HEIGHT_RATIO)
+        overlay = pygame.Surface((settings.WINDOW_WIDTH, overlay_h), pygame.SRCALPHA)
+        overlay.fill((0, 0, 0, settings.DIALOG_OVERLAY_ALPHA))
+        self.screen.blit(overlay, (0, settings.WINDOW_HEIGHT - overlay_h))
+
+        title_text = self.ambient_dialog_title or ""
+        y_base = settings.WINDOW_HEIGHT - overlay_h + settings.DIALOG_PADDING + 8
+        pad_x = settings.DIALOG_PADDING + 12
+        if title_text:
+            title_surf = self.font_dialog.render(title_text, True, settings.TITLE_GLOW_COLOR)
+            self.screen.blit(title_surf, (pad_x, y_base))
+            y_base += title_surf.get_height() + 10
+        line_gap = 6
+        for line in self.ambient_dialog_lines:
             ln_surf = self.font_dialog.render(line, True, settings.DIALOG_TEXT)
             self.screen.blit(ln_surf, (pad_x, y_base))
             y_base += ln_surf.get_height() + line_gap
@@ -4191,6 +4649,12 @@ class Game:
             return ["任务：收集音频日志", "目标：读取共鸣器核心记录"]
         if self.quest_stage == "resonator_exit":
             return ["任务：前往下一层", "目标：乘坐北侧电梯离开共鸣器"]
+        if self.quest_stage == "sanctuary_agent":
+            return ["任务：使用认知溶解剂", "提示：靠近艾拉按F"]
+        if self.quest_stage == "sanctuary_exit":
+            return ["任务：电梯权限已解锁", "目标：前往电梯离开避难所"]
+        if self.quest_stage == "sanctuary_done":
+            return []
         return []
 
     def _draw_player_health_hud(self) -> pygame.Rect:
@@ -4436,10 +4900,10 @@ class Game:
 
     def _set_quest_stage(self, stage: str) -> None:
         self.quest_stage = stage
-        if stage in {"elevator", "lab_exit", "resonator_log", "resonator_exit"}:
+        if stage in {"elevator", "lab_exit", "resonator_log", "resonator_exit", "sanctuary_exit", "sanctuary_done"}:
             self.elevator_locked = False
         if stage in {"intro", "explore", "combat", "log", "lab_intro", "lab_path", "lab_choice", "lab_bypass", "lab_switch",
-                     "resonator_intro", "resonator_talk", "resonator_boss"}:
+                     "resonator_intro", "resonator_talk", "resonator_boss", "sanctuary_agent"}:
             self.elevator_locked = True
 
     def _draw_cutscene_dialog(self) -> None:

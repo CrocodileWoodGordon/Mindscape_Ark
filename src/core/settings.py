@@ -18,6 +18,7 @@ MAP_FILES = {
     "F35": MAPS_DIR / "floor35.json",
     "F30": MAPS_DIR / "floor30.json",
     "F25": MAPS_DIR / "floor25.json",
+    "F10": MAPS_DIR / "floor10.json",
 }
 START_FLOOR = "F50"
 
@@ -178,6 +179,7 @@ INTERACT_MASKS = {
     "F35": None,
     "F30": None,
     "F25": None,
+    "F10": None,
 }
 INTERACT_MASK_RADIUS = 12  # map pixels radius to consider near a red zone
 
@@ -208,7 +210,7 @@ INTERACT_ZONES = {
         {"id": "logic_server_reset", "type": "switch", "rect": (493, 857, 566, 935)},
     ],
     "F25": [
-        {"id": "resonator_exit", "type": "exit", "rect": (148, 6, 172, 42), "to_floor": "F15"},
+        {"id": "resonator_exit", "type": "exit", "rect": (148, 6, 172, 42), "to_floor": "F10"},
         {"id": "resonator_npc_anger", "type": "npc", "rect": (84, 58, 126, 126)},
         {"id": "resonator_npc_betrayal", "type": "npc", "rect": (204, 58, 246, 126)},
         {"id": "resonator_npc_confusion", "type": "npc", "rect": (232, 130, 276, 196)},
@@ -217,6 +219,10 @@ INTERACT_ZONES = {
         {"id": "resonator_npc_fear", "type": "npc", "rect": (52, 130, 104, 196)},
         {"id": "resonator_core", "type": "switch", "rect": (148, 140, 172, 184)},
         {"id": "log_kaines_045", "type": "terminal", "rect": (148, 140, 172, 184)},
+    ],
+    "F10": [
+        {"id": "sanctuary_exit", "type": "exit", "rect": (450, 870, 516, 936), "to_floor": "F25"},
+        {"id": "aera", "type": "npc", "rect": (465, 477, 513, 525)},
     ],
 }
 
@@ -264,6 +270,8 @@ ACHIEVEMENTS = [
     {"id": "weapon_cache", "title": "散射火力", "desc": "解锁霰弹枪缓存。"},
     {"id": "resonator_echo", "title": "回声倾听者", "desc": "与六位情绪回声完成对话。"},
     {"id": "resonator_silence", "title": "共鸣平息", "desc": "击败情绪污染源。"},
+    {"id": "humanitarian", "title": "人道主义", "desc": "拒绝系统指令，守住艾拉与核心装置。"},
+    {"id": "efficiency_expert", "title": "效率至上", "desc": "服从指令，使用认知溶解剂。"},
 ]
 ACHIEVEMENT_NOTICE_DURATION = 2.2
 
@@ -281,6 +289,7 @@ FLOOR_IMAGE_FILES = {
     "floor40": IMAGES_DIR / "Floor40.png",
     "floor35": IMAGES_DIR / "Floor35.png",
     "floor30": IMAGES_DIR / "Floor30.png",
+    "floor10": IMAGES_DIR / "Floor10.png",
 }
 ARCHIVE_BOSS_IMAGE = IMAGES_DIR / "Floor35_2.png"
 

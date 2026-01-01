@@ -36,7 +36,11 @@
 - Updated weapon slot order and clip sizes (sidearm 7, scattergun 5, rifle 25).
 - Ensured Floor 35 elevator unlocks when the audio terminal is read.
 - Adjusted Floor 35 boss aftermath so the audio auto-plays, elevator unlocks immediately, and the quest/terminal availability update after the audio finishes.
+- 编写了用于生成 Floor 15（身份棱镜）地图的像素风提示词，匹配项目画风与剧情定位。
+- 细化了 Floor 15（身份棱镜）地图的生成提示词，使其更贴合整体画风与剧情主题。
 
+- 完成第7层避难所(F10)内容：新增Floor10地图JSON(由mask生成)、从F25直达F10、艾拉交互/溶解动画与防御战(5波净化者+艾拉手枪支援)、非暂停式战斗对白、分支后电梯权限解锁及相关任务提示与成就。
+- 调整F10地图缩放为当前全局缩放的一半。
 ## In Progress
 - Pause menu options for save/achievements are stubbed and awaiting full implementations.
 - Save system hooks are reserved via `data/saves` but persistence is not wired up.
