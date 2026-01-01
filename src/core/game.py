@@ -6,11 +6,12 @@ from pathlib import Path
 import random
 import math
 from collections import deque
+from datetime import datetime
 
 import pygame
 
 from . import settings
-from ..systems.ui import PauseMenu, StartMenu
+from ..systems.ui import AchievementsMenu, LoadMenu, PauseMenu, StartMenu
 from ..maps.loader import load_map, MapData
 from ..systems import collision
 from ..systems import pathfinding
@@ -29,10 +30,20 @@ class Game:
         self.in_menu = True
         self.pause_menu = PauseMenu(self.screen)
         self.pause_menu_active = False
+        self.achievements_menu = AchievementsMenu(self.screen)
+        self.achievements_active = False
+        self.load_menu = LoadMenu(self.screen)
+        self.load_menu_active = False
+        self.achievement_defs = list(settings.ACHIEVEMENTS)
+        self.achievement_lookup = {entry.get("id", ""): entry for entry in self.achievement_defs}
+        self.achievement_ids = set(self.achievement_lookup.keys())
+        self.achievement_notice_text = ""
+        self.achievement_notice_timer = 0.0
 
         self.map_data: MapData | None = None
         self.map_surface: pygame.Surface | None = None
         self.map_offset = (0, 0)
+        self.map_scale = settings.MAP_SCALE
         self._base_collision_grid: list[list[int]] = []
         self.lab_surface: pygame.Surface | None = None
         self.player_rect = pygame.Rect(0, 0, *settings.PLAYER_SIZE)  # map-space rect
@@ -131,7 +142,6 @@ class Game:
         self.debug_menu_index = 0
         self.quest_stage = "intro"  # Ensure quest stage reset in _load_floor
         self.elevator_locked = True
-
         self.font_path = self._resolve_font()
         self.font_prompt = self._load_font(18)
         self.font_dialog = self._load_font(20)
@@ -146,6 +156,7 @@ class Game:
         self.debug_press_times.clear()
         self.debug_menu_options = []
         self.debug_menu_index = 0
+        self.map_scale = self._resolve_map_scale()
         self._base_collision_grid = [row[:] for row in self.map_data.collision_grid]
         self.map_surface = self._build_map_surface(self.map_data)
         map_w, map_h = self.map_surface.get_size()
@@ -155,7 +166,7 @@ class Game:
         )
         spawn_x, spawn_y = self.map_data.spawn_player
         # spawn is in pixels relative to map; scale to render space
-        self.player_rect.center = (int(spawn_x * settings.MAP_SCALE), int(spawn_y * settings.MAP_SCALE))
+        self.player_rect.center = (int(spawn_x * self.map_scale), int(spawn_y * self.map_scale))
         self.player_move_speed = float(settings.PLAYER_SPEED) * float(getattr(self, "speed_bonus", 1.0))
         self.path = []
         self.path_target = None
@@ -263,12 +274,12 @@ class Game:
         # If an image exists, load and return it; otherwise draw collision blocks
         if data.image_path and data.image_path.exists():
             image = pygame.image.load(str(data.image_path)).convert()
-            if settings.MAP_SCALE != 1:
+            if self.map_scale != 1:
                 w, h = image.get_size()
-                image = pygame.transform.scale(image, (int(w * settings.MAP_SCALE), int(h * settings.MAP_SCALE)))
+                image = pygame.transform.scale(image, (int(w * self.map_scale), int(h * self.map_scale)))
             return image
         cell = data.cell_size
-        surf = pygame.Surface((int(data.grid_size[0] * cell * settings.MAP_SCALE), int(data.grid_size[1] * cell * settings.MAP_SCALE)))
+        surf = pygame.Surface((int(data.grid_size[0] * cell * self.map_scale), int(data.grid_size[1] * cell * self.map_scale)))
         surf.fill(settings.MAP_BG_COLOR)
         for y, row in enumerate(data.collision_grid):
             for x, val in enumerate(row):
@@ -276,7 +287,7 @@ class Game:
                     pygame.draw.rect(
                         surf,
                         settings.MAP_BLOCK_COLOR,
-                        (x * cell * settings.MAP_SCALE, y * cell * settings.MAP_SCALE, cell * settings.MAP_SCALE, cell * settings.MAP_SCALE),
+                        (x * cell * self.map_scale, y * cell * self.map_scale, cell * self.map_scale, cell * self.map_scale),
                     )
         return surf
 
@@ -296,12 +307,21 @@ class Game:
 
     def _handle_event(self, event: pygame.event.Event) -> None:
         if self.in_menu:
+            if self.load_menu_active:
+                action = self.load_menu.handle_event(event)
+                if action == "close_load":
+                    self.load_menu_active = False
+                elif isinstance(action, tuple) and action[0] == "load_entry":
+                    self._load_save_entry(action[1])
+                return
             action = self.start_menu.handle_event(event)
             if action == "start":
                 self._start_new_game()
             elif action == "load":
-                if not self._load_latest_save():
-                    self.start_menu.show_notice("读取存档失败")
+                if self._has_any_saves():
+                    self._open_load_menu()
+                else:
+                    self.start_menu.show_notice("暂无存档")
             return
         if self.intro_active:
             if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
@@ -321,6 +341,11 @@ class Game:
             action = self.pause_menu.handle_event(event)
             if action:
                 self._handle_pause_action(action)
+            return
+        if self.achievements_active:
+            action = self.achievements_menu.handle_event(event)
+            if action == "close_achievements":
+                self._close_achievements()
             return
         if self.debug_menu_active:
             self._handle_debug_menu_event(event)
@@ -446,6 +471,8 @@ class Game:
                 self._pause_return_to_menu()
         elif action == "cancel_confirm":
             self.pause_menu.close_confirm()
+        elif action == "close_menu":
+            self._toggle_pause_menu(False)
         elif action == "achievements":
             self._pause_open_achievements()
 
@@ -472,11 +499,53 @@ class Game:
         self._restart_to_menu()
 
     def _pause_open_achievements(self) -> None:
-        pass
+        self.pause_menu_active = False
+        self.achievements_active = True
+        self.achievements_menu.scroll_offset = 0.0
+        self.achievements_menu.scroll_dragging = False
+        self._reset_input_state()
+
+    def _close_achievements(self) -> None:
+        self.achievements_active = False
+        self._toggle_pause_menu(True)
+
+    def _unlock_achievement(self, achievement_id: str) -> None:
+        if not achievement_id or achievement_id not in self.achievement_ids:
+            return
+        if self.achievements.get(achievement_id):
+            return
+        self.achievements[achievement_id] = True
+        title = self.achievement_lookup.get(achievement_id, {}).get("title", "未知成就")
+        self.achievement_notice_text = f"成就达成：{title}"
+        self.achievement_notice_timer = settings.ACHIEVEMENT_NOTICE_DURATION
+
+    def _update_achievement_notice(self, dt: float) -> None:
+        if self.achievement_notice_timer <= 0.0:
+            return
+        self.achievement_notice_timer = max(0.0, self.achievement_notice_timer - dt)
+        if self.achievement_notice_timer == 0.0:
+            self.achievement_notice_text = ""
+
+    def _draw_achievement_notice(self) -> None:
+        if not self.achievement_notice_text or self.achievement_notice_timer <= 0.0:
+            return
+        surf = self.font_prompt.render(self.achievement_notice_text, True, settings.PROMPT_TEXT)
+        pad = 8
+        bg_rect = surf.get_rect()
+        bg_rect.width += pad * 2
+        bg_rect.height += pad * 2
+        bg_rect.center = (settings.WINDOW_WIDTH // 2, 36)
+        pygame.draw.rect(self.screen, settings.PROMPT_BG, bg_rect, border_radius=8)
+        pygame.draw.rect(self.screen, settings.PROMPT_BORDER, bg_rect, 1, border_radius=8)
+        self.screen.blit(surf, (bg_rect.x + pad, bg_rect.y + pad))
 
     def _start_new_game(self) -> None:
         self.pause_menu_active = False
+        self.achievements_active = False
         self.in_menu = False
+        self.load_menu_active = False
+        self.achievement_notice_text = ""
+        self.achievement_notice_timer = 0.0
         self.achievements = {}
         self.story_flags = {}
         self.speed_bonus = 1.0
@@ -497,6 +566,57 @@ class Game:
 
     def _has_any_saves(self) -> bool:
         return bool(self._list_save_files())
+
+    def _format_save_time(self, saved_at: str | None, fallback_ts: float) -> str:
+        if saved_at:
+            try:
+                parsed = datetime.fromisoformat(saved_at)
+                return parsed.strftime("%Y-%m-%d %H:%M:%S")
+            except Exception:
+                pass
+        try:
+            return datetime.fromtimestamp(fallback_ts).strftime("%Y-%m-%d %H:%M:%S")
+        except Exception:
+            return "未知时间"
+
+    def _collect_save_entries(self) -> list[dict]:
+        entries: list[dict] = []
+        for path in self._list_save_files():
+            data = save_manager.load_save(path) or {}
+            saved_at = data.get("saved_at")
+            floor = data.get("current_floor", "未知")
+            stamp = self._format_save_time(saved_at, path.stat().st_mtime)
+            entries.append({
+                "path": path,
+                "time": stamp,
+                "floor": floor,
+            })
+        return entries
+
+    def _open_load_menu(self) -> None:
+        self.load_menu.set_entries(self._collect_save_entries())
+        self.load_menu_active = True
+        self._reset_input_state()
+
+    def _load_save_entry(self, index: int) -> None:
+        if index < 0 or index >= len(self.load_menu.entries):
+            return
+        path = self.load_menu.entries[index].get("path")
+        if not isinstance(path, Path):
+            return
+        data = save_manager.load_save(path)
+        if not data:
+            self.start_menu.show_notice("读取存档失败")
+            return
+        self._apply_save_state(data)
+        self._last_save_path = path
+        self._last_save_signature = self._save_state_signature()
+        self.in_menu = False
+        self.pause_menu_active = False
+        self.intro_active = False
+        self.cutscene_active = False
+        self.load_menu_active = False
+        self._reset_input_state()
 
     def _collect_save_state(self) -> dict:
         return {
@@ -569,6 +689,10 @@ class Game:
 
     def _apply_save_state(self, data: dict) -> None:
         self._loading_save = True
+        self.achievements_active = False
+        self.load_menu_active = False
+        self.achievement_notice_text = ""
+        self.achievement_notice_timer = 0.0
         self.achievements = dict(data.get("achievements", {}))
         self.story_flags = dict(data.get("story_flags", {}))
         self.speed_bonus = float(data.get("speed_bonus", 1.0))
@@ -623,14 +747,20 @@ class Game:
                 self.start_menu.set_save_available(self._has_any_saves())
                 self._save_check_timer = 0.5
             self.start_menu.update(dt)
+            if self.load_menu_active:
+                self.load_menu.update(dt)
         elif self.intro_active:
             self._update_intro(dt)
         elif self.cutscene_active:
             self._update_cutscene(dt)
+        elif self.achievements_active:
+            self.achievements_menu.update(dt)
         elif self.pause_menu_active:
             self.pause_menu.update(dt)
         else:
             self._update_play(dt)
+        if not any((self.in_menu, self.intro_active, self.cutscene_active, self.pause_menu_active, self.achievements_active)):
+            self._update_achievement_notice(dt)
         if not self.pause_menu_active:
             self._update_dialog(dt)
 
@@ -754,6 +884,11 @@ class Game:
         else:
             self._enter_floor_default()
 
+    def _resolve_map_scale(self) -> int:
+        if self.current_floor == "F30":
+            return max(1, settings.MAP_SCALE // 3)
+        return settings.MAP_SCALE
+
     def _floor_value(self, floor_id: str) -> int:
         if floor_id.startswith("F") and floor_id[1:].isdigit():
             return int(floor_id[1:])
@@ -775,11 +910,12 @@ class Game:
         if not width or not height:
             if self.map_surface:
                 w, h = self.map_surface.get_size()
-                width = w // max(1, settings.MAP_SCALE)
-                height = h // max(1, settings.MAP_SCALE)
+                width = w // max(1, self.map_scale)
+                height = h // max(1, self.map_scale)
             else:
                 width = height = 0
         self.archive_center = (width / 2.0, height / 2.0)
+        self.archive_center = self._snap_to_passable(*self.archive_center, max_steps=12)
         self.archive_core_radius = 120.0
         self.archive_warning_radius = 220.0
         self.archive_boss = None
@@ -804,6 +940,8 @@ class Game:
             "phase_three_started": False,
             "flash_started": False,
             "flash_complete": False,
+            "audio_log_shown": False,
+            "audio_log_active": False,
             "exit_unlocked": False,
             "log_available": False,
             "pulse_cover_prompt": False,
@@ -818,23 +956,22 @@ class Game:
     def _enter_floor_f30(self) -> None:
         self.logic_flags = {
             "intro_shown": False,
-            "glitch_triggered": False,
-            "relays_completed": False,
+            "servers_solved": False,
             "weapon_ready": False,
             "weapon_claimed": False,
             "exit_unlocked": False,
             "terminal_ready": False,
+            "terminal_read": False,
+            "server_1": True,
+            "server_2": False,
+            "server_3": True,
         }
-        self.logic_sequence = ["relay_left", "relay_right", "relay_center"]
+        self.logic_sequence = ["logic_server_1", "logic_server_2", "logic_server_3"]
         self.logic_progress = []
         self.logic_glitch_timer = 0.0
         self.logic_overlay_timer = 0.0
         self.logic_overlay_text = ""
-        self.logic_relay_positions = {
-            "relay_left": (212.0, 316.0),
-            "relay_right": (428.0, 316.0),
-            "relay_center": (320.0, 272.0),
-        }
+        self.logic_relay_positions = {}
         self.elevator_locked = True
         self._set_quest_stage("logic_intro")
         self.floor_timers["logic_intro_delay"] = 0.6
@@ -846,8 +983,8 @@ class Game:
         if not width or not height:
             if self.map_surface:
                 w, h = self.map_surface.get_size()
-                width = w // max(1, settings.MAP_SCALE)
-                height = h // max(1, settings.MAP_SCALE)
+                width = w // max(1, self.map_scale)
+                height = h // max(1, self.map_scale)
             else:
                 width = height = 0
         center = (width / 2.0, height / 2.0)
@@ -955,7 +1092,7 @@ class Game:
         scale_units = self._lab_unit_scale() * self.map_data.cell_size
         base_x = (ux * scale_units) + (scale_units * 0.5)
         base_y = (uy * scale_units) + (scale_units * 0.5)
-        s = settings.MAP_SCALE
+        s = self.map_scale
         return (base_x * s, base_y * s)
 
     def _lab_init_traps(self) -> None:
@@ -1009,7 +1146,7 @@ class Game:
         if not self.map_data:
             self.lab_surface = None
             return
-        cell_px = self.map_data.cell_size * settings.MAP_SCALE
+        cell_px = self.map_data.cell_size * self.map_scale
         width = self.map_data.grid_size[0] * cell_px
         height = self.map_data.grid_size[1] * cell_px
         surf = pygame.Surface((width, height))
@@ -1033,10 +1170,10 @@ class Game:
                 continue
             x1, y1, x2, y2 = trig["rect"]
             scaled_rect = pygame.Rect(
-                int(x1 * settings.MAP_SCALE),
-                int(y1 * settings.MAP_SCALE),
-                max(1, int((x2 - x1) * settings.MAP_SCALE)),
-                max(1, int((y2 - y1) * settings.MAP_SCALE)),
+                int(x1 * self.map_scale),
+                int(y1 * self.map_scale),
+                max(1, int((x2 - x1) * self.map_scale)),
+                max(1, int((y2 - y1) * self.map_scale)),
             )
             surf.fill(color, scaled_rect)
         self.lab_surface = surf.convert()
@@ -1109,7 +1246,7 @@ class Game:
     def _draw_lab_traps(self) -> None:
         if not self.lab_traps:
             return
-        scale = settings.MAP_SCALE
+        scale = self.map_scale
         for trap in self.lab_traps:
             state = trap.get("state")
             if state in {"idle"} or not trap.get("rect"):
@@ -1137,7 +1274,7 @@ class Game:
     def _draw_lab_barriers(self) -> None:
         if not self.lab_barriers:
             return
-        scale = settings.MAP_SCALE
+        scale = self.map_scale
         for barrier in self.lab_barriers:
             rect = barrier.get("rect")
             if not rect:
@@ -1204,28 +1341,32 @@ class Game:
         self._draw_archive_boss_healthbar(boss, sx, sy)
 
     def _draw_logic_environment(self) -> None:
-        scale = settings.MAP_SCALE
+        scale = self.map_scale
         ox, oy = self.map_offset
         zones = settings.INTERACT_ZONES.get("F30", [])
+        server_map = {
+            "logic_server_1": "server_1",
+            "logic_server_2": "server_2",
+            "logic_server_3": "server_3",
+        }
         for zone in zones:
             zone_id = zone.get("id", "")
-            if zone_id in self.logic_sequence and self.logic_flags.get(f"{zone_id}_lit"):
-                x1, y1, x2, y2 = zone["rect"]
-                rect = pygame.Rect(
-                    int(x1 * scale + ox),
-                    int(y1 * scale + oy),
-                    int((x2 - x1) * scale),
-                    int((y2 - y1) * scale),
-                )
-                highlight = pygame.Surface(rect.size, pygame.SRCALPHA)
-                highlight.fill((90, 210, 255, 80))
-                pygame.draw.rect(highlight, (210, 240, 255, 180), highlight.get_rect(), 3)
-                self.screen.blit(highlight, rect.topleft)
-        if self.logic_glitch_timer > 0.0:
-            alpha = 80 + int((math.sin(self.logic_glitch_timer * 12.0) + 1.0) * 60)
-            glitch = pygame.Surface((settings.WINDOW_WIDTH, settings.WINDOW_HEIGHT), pygame.SRCALPHA)
-            glitch.fill((255, 190, 110, max(40, min(190, alpha))))
-            self.screen.blit(glitch, (0, 0))
+            server_key = server_map.get(zone_id)
+            if not server_key or not self.logic_flags.get(server_key):
+                continue
+            x1, y1, x2, y2 = zone["rect"]
+            rect = pygame.Rect(
+                int(x1 * scale + ox),
+                int(y1 * scale + oy),
+                int((x2 - x1) * scale),
+                int((y2 - y1) * scale),
+            )
+            glow_rect = pygame.Rect(0, 0, int(28 * scale), int(12 * scale))
+            glow_rect.centerx = rect.centerx
+            glow_rect.top = rect.top + int(8 * scale)
+            glow = pygame.Surface(glow_rect.size, pygame.SRCALPHA)
+            pygame.draw.rect(glow, (120, 255, 170, 210), glow.get_rect(), border_radius=4)
+            self.screen.blit(glow, glow_rect.topleft)
         if self.logic_overlay_timer > 0.0 and self.logic_overlay_text:
             surf = self.font_dialog.render(self.logic_overlay_text, True, settings.TITLE_GLOW_COLOR)
             rect = surf.get_rect(center=(settings.WINDOW_WIDTH // 2, 108))
@@ -1296,8 +1437,8 @@ class Game:
         if phase not in {"warning", "firing"}:
             return
         ox, oy = self.map_offset
-        center = (int(self.archive_center[0] * settings.MAP_SCALE + ox), int(self.archive_center[1] * settings.MAP_SCALE + oy))
-        radius = int((self.archive_core_radius + 36.0) * settings.MAP_SCALE)
+        center = (int(self.archive_center[0] * self.map_scale + ox), int(self.archive_center[1] * self.map_scale + oy))
+        radius = int((self.archive_core_radius + 36.0) * self.map_scale)
         if phase == "warning":
             color = (255, 120, 160)
             width = 4
@@ -1316,14 +1457,15 @@ class Game:
 
     def _player_map_pos(self) -> tuple[float, float]:
         return (
-            self.player_rect.centerx / settings.MAP_SCALE,
-            self.player_rect.centery / settings.MAP_SCALE,
+            self.player_rect.centerx / self.map_scale,
+            self.player_rect.centery / self.map_scale,
         )
 
     def _lab_choose_fight(self, npc_state: dict) -> None:
         if npc_state.get("enemy_spawned"):
             return
         self.lab_branch = "fight"
+        self._unlock_achievement("sensory_choice")
         npc_state["state"] = "hostile"
         npc_state["enemy_spawned"] = True
         self._show_dialog(["指引者：抑制协议启动，小心它的冲撞。"], title="指引者")
@@ -1387,8 +1529,10 @@ class Game:
         if self.lab_branch == "fight":
             return
         self.lab_branch = "bypass"
+        self._unlock_achievement("sensory_choice")
         npc_state["state"] = "bypass"
         self.floor_flags["lab_branch_resolved"] = True
+        self._unlock_achievement("lab_resolved")
         self._show_dialog(["指引者：记录选择，沿回廊绕行。警惕后续陷阱。"], title="指引者")
         for trap in self.lab_traps:
             if trap.get("id") in {"trap2", "trap3"}:
@@ -1411,29 +1555,27 @@ class Game:
     def _update_floor_f30(self, dt: float) -> None:
         if not self.map_data:
             return
+        self._logic_bootstrap_servers()
         if not self.logic_flags.get("intro_shown"):
             timer = self.floor_timers.get("logic_intro_delay", 0.0) - dt
             if timer <= 0.0:
                 self.logic_flags["intro_shown"] = True
                 self.floor_timers.pop("logic_intro_delay", None)
                 self._show_dialog([
-                    "指引者：Logic Core。核心继电器失序，系统濒临崩溃。依序重启三座主继电器。"
+                    "指引者：Logic Core。三台服务器互相联动，状态会连带翻转。",
+                    "提示：与服务器交互会切换自身与相邻服务器的开关。",
+                    "初始状态：1、3 号开启，2 号关闭。",
+                    "目标：让三台服务器全部点亮以解锁终端。"
                 ], title="指引者")
                 self._set_quest_stage("logic_relays")
             else:
                 self.floor_timers["logic_intro_delay"] = timer
-        self._logic_update_glitch(dt)
         if self.logic_overlay_timer > 0.0:
             prev = self.logic_overlay_timer
             self.logic_overlay_timer = max(0.0, self.logic_overlay_timer - dt)
             if prev > 0.0 and self.logic_overlay_timer == 0.0:
                 self.logic_overlay_text = ""
-        if not self.logic_flags.get("glitch_triggered"):
-            px, py = self._player_map_pos()
-            for pos in self.logic_relay_positions.values():
-                if math.hypot(px - pos[0], py - pos[1]) <= 36.0:
-                    self._logic_trigger_glitch()
-                    break
+        self._logic_check_servers()
 
     def _update_floor_f25(self, dt: float) -> None:
         if not self.map_data or not self.resonator_state:
@@ -1462,6 +1604,7 @@ class Game:
             self.any_enemy_aggro = True
         if state.get("npc_spoken", 0) >= state.get("npc_total", 0) and not state.get("buff_awarded"):
             state["buff_awarded"] = True
+            self._unlock_achievement("resonator_echo")
             self.speed_bonus = max(getattr(self, "speed_bonus", 1.0), 1.15)
             state["speed_buff"] = self.speed_bonus
             self._show_dialog([
@@ -1483,87 +1626,62 @@ class Game:
         slow_factor = float(state.get("slow_factor", 1.0)) if slow_timer > 0.0 else 1.0
         self.player_move_speed = settings.PLAYER_SPEED * speed_buff * slow_factor
 
-    def _logic_update_glitch(self, dt: float) -> None:
-        if self.logic_glitch_timer > 0.0:
-            prev = self.logic_glitch_timer
-            self.logic_glitch_timer = max(0.0, self.logic_glitch_timer - dt)
-            if prev > 0.0 and self.logic_glitch_timer == 0.0:
-                if not self.logic_flags.get("glitch_resolved"):
-                    self.logic_flags["glitch_resolved"] = True
-                    self._show_dialog([
-                        "指引者：界面暂时恢复。请按顺序激活继电器。"
-                    ], title="指引者")
+    def _logic_bootstrap_servers(self) -> None:
+        if not all(key in self.logic_flags for key in ("server_1", "server_2", "server_3")):
+            self.logic_flags["server_1"] = True
+            self.logic_flags["server_2"] = False
+            self.logic_flags["server_3"] = True
+        self.logic_flags.setdefault("terminal_ready", False)
+        self.logic_flags.setdefault("servers_solved", False)
+        self.logic_flags.setdefault("weapon_ready", False)
+        self.logic_flags.setdefault("weapon_claimed", False)
+        self.logic_flags.setdefault("exit_unlocked", False)
+        self.logic_flags.setdefault("terminal_read", False)
 
-    def _logic_trigger_glitch(self) -> None:
-        self.logic_flags["glitch_triggered"] = True
-        self.logic_flags.pop("glitch_resolved", None)
-        self.logic_glitch_timer = 6.0
-        self._show_dialog([
-            "//DIRECTIVE: EXTRACT_CREATIVE_SOLUTION.FROM P-7",
-            "//PRIORITY: 100% DATA EXTRACTION",
-        ], title="SYSTEM://ERROR")
+    def _logic_reset_servers(self) -> None:
+        self.logic_flags["server_1"] = True
+        self.logic_flags["server_2"] = False
+        self.logic_flags["server_3"] = True
 
-    def _logic_reset_relays(self) -> None:
-        self.logic_progress = []
-        for relay_id in self.logic_sequence:
-            self.logic_flags.pop(f"{relay_id}_lit", None)
-
-    def _logic_activate_relay(self, relay_id: str) -> None:
-        if self.logic_flags.get("relays_completed"):
-            self._show_dialog([
-                "系统：主电路已稳定。前往电梯。"
-            ], title="系统")
-            return
-        expected_index = len(self.logic_progress)
-        expected = self.logic_sequence[expected_index]
-        if relay_id != expected:
-            self._logic_reset_relays()
-            self.logic_overlay_text = "!! 电弧过载 !!"
-            self.logic_overlay_timer = 0.9
-            self._apply_player_damage(12.0)
-            self._show_dialog([
-                "系统：顺序错误。继电器重置。"
-            ], title="系统")
-            return
-        self.logic_progress.append(relay_id)
-        self.logic_flags[f"{relay_id}_lit"] = True
-        step = len(self.logic_progress)
-        guidance = {
-            1: "系统：左侧继电器稳定。准备同步右侧线路。",
-            2: "系统：右侧继电器连通。剩余中央控制。",
+    def _logic_toggle_servers(self, server_id: str) -> None:
+        toggle_map = {
+            "logic_server_1": ("server_1", "server_2"),
+            "logic_server_2": ("server_1", "server_2", "server_3"),
+            "logic_server_3": ("server_2", "server_3"),
         }
-        if step < len(self.logic_sequence):
-            self._show_dialog([guidance.get(step, "系统：继续操作。")], title="系统")
+        targets = toggle_map.get(server_id, ())
+        for key in targets:
+            self.logic_flags[key] = not self.logic_flags.get(key, False)
+
+    def _logic_check_servers(self) -> None:
+        if self.logic_flags.get("servers_solved"):
             return
-        self.logic_flags["relays_completed"] = True
-        self.logic_flags["weapon_ready"] = True
-        self.logic_flags["terminal_ready"] = True
-        self.logic_flags["exit_unlocked"] = True
-        self.logic_overlay_text = "[COGNITIVE_BARRIER_INTEGRITY: 64%]"
-        self.logic_overlay_timer = 1.5
-        self.elevator_locked = False
-        self._set_quest_stage("logic_terminal")
-        self._show_dialog([
-            "系统：主电力恢复。辅助模块解锁。",
-            "指引者：读取终端，确认伦理委员会记录，再前往北侧电梯。"
-        ], title="系统")
+        if all(self.logic_flags.get(key, False) for key in ("server_1", "server_2", "server_3")):
+            self.logic_flags["servers_solved"] = True
+            self.logic_flags["terminal_ready"] = True
+            self._unlock_achievement("logic_relays")
+            self._set_quest_stage("logic_terminal")
+            self._show_dialog([
+                "系统：三台服务器同步完成。",
+                "指引者：终端已解锁，读取记录后再前往电梯。"
+            ], title="系统")
 
     def _logic_handle_weapon_cache(self) -> None:
         if not self.logic_flags.get("weapon_ready"):
             self._show_dialog([
-                "系统：箱体仍在锁定中。完成继电器顺序后再试。"
+                "系统：箱体仍在锁定中。请先解锁终端。"
             ], title="系统")
             return
         if self.logic_flags.get("weapon_claimed"):
             self._show_dialog([
-                "提示：熵增步枪已解锁。"
+                "提示：霰弹枪已解锁。"
             ], title="提示")
             return
         self.logic_flags["weapon_claimed"] = True
-        for weapon_id in settings.WEAPON_SLOTS[1:]:
-            self._unlock_weapon(weapon_id)
+        self._unlock_achievement("weapon_cache")
+        self._unlock_weapon("scattergun")
         self._show_dialog([
-            "获得武器：熵增步枪。",
+            "获得武器：霰弹枪。",
             "提示：按数字键 1-3 切换武器。"
         ], title="系统")
 
@@ -1572,8 +1690,13 @@ class Game:
         if trig_id == "logic_weapon_cache":
             self._logic_handle_weapon_cache()
             return
-        if trig_id in self.logic_sequence:
-            self._logic_activate_relay(trig_id)
+        if trig_id == "logic_server_reset":
+            self._logic_reset_servers()
+            self._show_dialog(["系统：服务器状态已重置。"], title="系统")
+            return
+        if trig_id in {"logic_server_1", "logic_server_2", "logic_server_3"}:
+            self._logic_toggle_servers(trig_id)
+            self._logic_check_servers()
             return
         self._show_dialog(["开关没有响应。"], title="提示")
 
@@ -1721,12 +1844,21 @@ class Game:
         if self.archive_flags.get("boss_revealed") and not self.archive_boss and not self.archive_flags.get("flash_started"):
             self.archive_flags["flash_started"] = True
             self._archive_trigger_flashback()
-        if self.archive_flags.get("flash_complete") and not self.archive_flags.get("exit_unlocked"):
+        if self.archive_flags.get("flash_complete") and not self.archive_flags.get("audio_log_shown"):
+            lines = [
+                "指引者：高密度记忆洪流已被压制。忽略那些碎片——它们属于旧生。",
+                *self._terminal_message("log_elara_audio"),
+                "系统：北侧电梯已解锁。",
+            ]
+            self._show_dialog(lines, title="音频日志")
+            self.archive_flags["audio_log_shown"] = True
+            self.archive_flags["audio_log_active"] = True
             self.archive_flags["exit_unlocked"] = True
-            self._archive_unlock_exit()
-            self._set_quest_stage("archive_exit")
-        if self.archive_flags.get("exit_unlocked") and not self.archive_flags.get("log_available"):
+            self._archive_unlock_exit(show_dialog=False)
+        if self.archive_flags.get("audio_log_active") and not self.dialog_lines:
+            self.archive_flags["audio_log_active"] = False
             self.archive_flags["log_available"] = True
+            self._set_quest_stage("archive_exit")
         if self.archive_boss:
             self.any_enemy_aggro = True
 
@@ -1752,8 +1884,8 @@ class Game:
             if grid[gy][gx] not in settings.PASSABLE_VALUES:
                 continue
             spawn = {
-                "x": float(px * settings.MAP_SCALE),
-                "y": float(py * settings.MAP_SCALE),
+                "x": float(px * self.map_scale),
+                "y": float(py * self.map_scale),
                 "hp": 45.0,
                 "max_hp": 45.0,
                 "state": "idle",
@@ -1771,8 +1903,9 @@ class Game:
         return False
 
     def _archive_spawn_boss(self) -> None:
-        center_x = self.archive_center[0] * settings.MAP_SCALE
-        center_y = self.archive_center[1] * settings.MAP_SCALE
+        cx, cy = self._snap_to_passable(*self.archive_center, max_steps=8)
+        center_x = cx * self.map_scale
+        center_y = cy * self.map_scale
         base_hp = 600.0
         if self._rifle_unlocked():
             base_hp *= settings.BOSS_HP_SCALE_WITH_RIFLE
@@ -1783,7 +1916,7 @@ class Game:
             "max_hp": base_hp,
             "phase": 1,
             "angle": 0.0,
-            "orbit": 38.0 * settings.MAP_SCALE / 3,
+            "orbit": 38.0 * self.map_scale / 3,
             "fire_timer": 2.5,
             "state": "active",
             "hit_radius": 78.0,
@@ -1802,9 +1935,10 @@ class Game:
         for ox, oy in offsets:
             px = self.archive_center[0] + ox
             py = self.archive_center[1] + oy
+            px, py = self._snap_to_passable(px, py, max_steps=6)
             spawn = {
-                "x": float(px * settings.MAP_SCALE),
-                "y": float(py * settings.MAP_SCALE),
+                "x": float(px * self.map_scale),
+                "y": float(py * self.map_scale),
                 "hp": 70.0,
                 "max_hp": 70.0,
                 "state": "idle",
@@ -1852,6 +1986,7 @@ class Game:
         if ratio <= 0.33 and boss.get("phase", 1) < 3 and not self.archive_flags.get("phase_three_started"):
             self.archive_flags["phase_three_started"] = True
             boss["phase"] = 3
+            self._unlock_achievement("archive_phase_three")
             boss["fire_timer"] = min(boss.get("fire_timer", 2.5), 1.5)
             self.archive_pulse_state.update({
                 "timer": 4.0,
@@ -1868,8 +2003,8 @@ class Game:
         speed = 0.35 if boss.get("phase", 1) == 1 else (0.52 if boss.get("phase", 1) == 2 else 0.68)
         angle = (angle + speed * dt) % math.tau
         orbit = boss.get("orbit", 60.0)
-        center_x = self.archive_center[0] * settings.MAP_SCALE
-        center_y = self.archive_center[1] * settings.MAP_SCALE
+        center_x = self.archive_center[0] * self.map_scale
+        center_y = self.archive_center[1] * self.map_scale
         boss["x"] = center_x + math.cos(angle) * orbit
         boss["y"] = center_y + math.sin(angle) * orbit
         boss["angle"] = angle
@@ -2007,7 +2142,7 @@ class Game:
             self.archive_projectiles = []
             return
         grid = self.map_data.collision_grid
-        cell_px = self.map_data.cell_size * settings.MAP_SCALE
+        cell_px = self.map_data.cell_size * self.map_scale
         max_y = len(grid)
         max_x = len(grid[0]) if max_y else 0
         player_radius = max(settings.PLAYER_SIZE) * 0.5
@@ -2062,15 +2197,14 @@ class Game:
         if not self.archive_flash_sequence and self.archive_flash_active:
             self.archive_flash_active = False
             self.archive_flags["flash_complete"] = True
-            self._show_dialog([
-                "指引者：高密度记忆洪流已被压制。忽略那些碎片——它们属于旧生。"
-            ], title="指引者")
+            self._unlock_achievement("archive_core")
 
-    def _archive_unlock_exit(self) -> None:
+    def _archive_unlock_exit(self, *, show_dialog: bool = True) -> None:
         self.elevator_locked = False
-        self._show_dialog([
-            "指引者：北侧电梯已解锁，带上音频日志，我们继续前进。"
-        ], title="指引者")
+        if show_dialog:
+            self._show_dialog([
+                "指引者：北侧电梯已解锁，带上音频日志，我们继续前进。"
+            ], title="指引者")
 
     def _update_floor_f40(self, dt: float) -> None:
         if not self.map_data:
@@ -2087,6 +2221,7 @@ class Game:
         if not self.floor_flags.get("lab_trap1_triggered") and py <= 210:
             self.floor_flags["lab_trap1_triggered"] = True
             self._lab_trigger_trap("trap1")
+            self._unlock_achievement("lab_first_trap")
             self._set_quest_stage("lab_path")
         self._lab_update_traps(dt)
         npc_state = self.lab_npc_state.get("logic_error_entity")
@@ -2114,6 +2249,7 @@ class Game:
             self.floor_flags["lab_switch_activated"] = True
             self._set_quest_stage("lab_exit")
             self.elevator_locked = False
+            self._unlock_achievement("lab_unlock")
             self._show_dialog(["系统：权限同步完成。电梯锁定解除。"], title="系统")
             return
         if self.current_floor == "F30":
@@ -2162,8 +2298,8 @@ class Game:
             state["state"] = "unstable"
             anchor = trig.get("rect")
             if anchor:
-                ax = (anchor[0] + anchor[2]) / 2 / settings.MAP_SCALE
-                ay = (anchor[1] + anchor[3]) / 2 / settings.MAP_SCALE
+                ax = (anchor[0] + anchor[2]) / 2 / self.map_scale
+                ay = (anchor[1] + anchor[3]) / 2 / self.map_scale
                 state["anchor_pos"] = (ax, ay)
             else:
                 state["anchor_pos"] = self._player_map_pos()
@@ -2180,6 +2316,7 @@ class Game:
         if self.lab_branch == "fight" and npc_state and npc_state.get("state") == "hostile":
             npc_state["state"] = "defeated"
             self.floor_flags["lab_branch_resolved"] = True
+            self._unlock_achievement("lab_resolved")
             self._set_quest_stage("lab_switch")
             self._show_dialog(["指引者：异常数据已清除，前往终端完成授权。"], title="指引者")
         else:
@@ -2289,8 +2426,8 @@ class Game:
         if not self.resonator_state or not self.map_data:
             return
         center = self.resonator_state.get("center", (0.0, 0.0))
-        cx = center[0] * settings.MAP_SCALE
-        cy = center[1] * settings.MAP_SCALE
+        cx = center[0] * self.map_scale
+        cy = center[1] * self.map_scale
         px = self.player_rect.centerx
         py = self.player_rect.centery
         dir_angle = math.atan2(py - cy, px - cx)
@@ -2345,7 +2482,7 @@ class Game:
         if not self.resonator_projectiles or not self.map_data:
             return
         grid = self.map_data.collision_grid
-        cell_px = self.map_data.cell_size * settings.MAP_SCALE
+        cell_px = self.map_data.cell_size * self.map_scale
         max_y = len(grid)
         max_x = len(grid[0]) if max_y else 0
         player_radius = max(settings.PLAYER_SIZE) * 0.5
@@ -2391,6 +2528,7 @@ class Game:
             return
         self.resonator_projectiles = []
         self.combat_active = False
+        self._unlock_achievement("resonator_silence")
         self.resonator_state["log_available"] = True
         self.resonator_state["exit_unlocked"] = True
         self.resonator_state["active_mood"] = None
@@ -2449,8 +2587,8 @@ class Game:
         state = self.resonator_state
         center = state.get("center", (0.0, 0.0))
         ox, oy = self.map_offset
-        cx = int(center[0] * settings.MAP_SCALE + ox)
-        cy = int(center[1] * settings.MAP_SCALE + oy)
+        cx = int(center[0] * self.map_scale + ox)
+        cy = int(center[1] * self.map_scale + oy)
         mood = state.get("active_mood")
         if state.get("boss_state") == "defeated":
             color = (70, 80, 90)
@@ -2507,6 +2645,8 @@ class Game:
     def _render(self) -> None:
         if self.in_menu:
             self.start_menu.draw()
+            if self.load_menu_active:
+                self.load_menu.draw()
             pygame.display.flip()
             return
         if self.intro_active:
@@ -2518,6 +2658,11 @@ class Game:
             self._update_camera()
             self._render_play_base()
             self._draw_cutscene_dialog()
+            pygame.display.flip()
+            return
+        if self.achievements_active:
+            self._render_play_base()
+            self.achievements_menu.draw(self.achievement_defs, self.achievements)
             pygame.display.flip()
             return
         if self.pause_menu_active:
@@ -2555,6 +2700,7 @@ class Game:
 
         self._render_minimap()
         self._draw_quest_hud()
+        self._draw_achievement_notice()
         health_rect = self._draw_player_health_hud()
         ammo_rect = self._draw_ammo_hud(health_rect)
         self._draw_reload_bar(ammo_rect)
@@ -2588,9 +2734,9 @@ class Game:
         except Exception:
             return None
         sprite = self._apply_transparent_background(sprite)
-        if settings.MAP_SCALE != 1:
+        if self.map_scale != 1:
             w, h = sprite.get_size()
-            scaled = pygame.transform.scale(sprite, (int(w * settings.MAP_SCALE), int(h * settings.MAP_SCALE)))
+            scaled = pygame.transform.scale(sprite, (int(w * self.map_scale), int(h * self.map_scale)))
             color_key = sprite.get_colorkey()
             if color_key is not None:
                 scaled.set_colorkey(color_key)
@@ -2628,14 +2774,14 @@ class Game:
                 sprite = pygame.image.load(str(path)).convert_alpha()
             except Exception:
                 continue
-            if settings.MAP_SCALE != 1:
+            if self.map_scale != 1:
                 w, h = sprite.get_size()
-                sprite = pygame.transform.scale(sprite, (int(w * settings.MAP_SCALE), int(h * settings.MAP_SCALE)))
+                sprite = pygame.transform.scale(sprite, (int(w * self.map_scale), int(h * self.map_scale)))
             sprite = self._apply_transparent_background(sprite)
             self.resonator_assets[key] = sprite
         if "resonator_core_placeholder" not in self.resonator_assets:
-            width = int(24 * settings.MAP_SCALE)
-            height = int(50 * settings.MAP_SCALE)
+            width = int(24 * self.map_scale)
+            height = int(50 * self.map_scale)
             width = max(12, width)
             height = max(20, height)
             surf = pygame.Surface((width, height), pygame.SRCALPHA)
@@ -2695,7 +2841,7 @@ class Game:
                 ],
             },
         }
-        scale = settings.MAP_SCALE
+        scale = self.map_scale
         for data in layout.values():
             px, py = data["pos"]
             data["pos_scaled"] = (px * scale, py * scale)
@@ -2790,7 +2936,7 @@ class Game:
         if not (0 <= map_x < map_w and 0 <= map_y < map_h):
             return
         # Convert to grid
-        cell = self.map_data.cell_size * settings.MAP_SCALE
+        cell = self.map_data.cell_size * self.map_scale
         start = (self.player_rect.centerx // cell, self.player_rect.centery // cell)
         goal = (int(map_x) // cell, int(map_y) // cell)
         self._start_click_feedback(map_x, map_y)
@@ -2836,16 +2982,16 @@ class Game:
         before = self.player_rect.center
         # offset collider downward to align with legs
         collider = self.player_rect.copy()
-        collider.move_ip(0, settings.PLAYER_COLLIDER_OFFSET_Y * settings.MAP_SCALE)
+        collider.move_ip(0, settings.PLAYER_COLLIDER_OFFSET_Y * self.map_scale)
         moved = collision.move_with_collision(
             collider,
             (dx, dy),
             self.map_data.collision_grid,
-            cell_size=self.map_data.cell_size * settings.MAP_SCALE,
+            cell_size=self.map_data.cell_size * self.map_scale,
             substep=settings.COLLISION_SUBSTEP,
         )
         # move visual rect to keep relative offset
-        moved.move_ip(0, -settings.PLAYER_COLLIDER_OFFSET_Y * settings.MAP_SCALE)
+        moved.move_ip(0, -settings.PLAYER_COLLIDER_OFFSET_Y * self.map_scale)
         self.player_rect = moved
         return self.player_rect.center != before
 
@@ -3009,7 +3155,7 @@ class Game:
                 clip_size = self._weapon_clip_size(self.current_weapon)
                 self.ammo_in_clip = clip_size
                 self.weapon_ammo[self.current_weapon] = clip_size
-        cell_px = self.map_data.cell_size * settings.MAP_SCALE
+        cell_px = self.map_data.cell_size * self.map_scale
         max_y = len(self.map_data.collision_grid)
         max_x = len(self.map_data.collision_grid[0]) if max_y else 0
         next_bullets: list[dict] = []
@@ -3062,8 +3208,8 @@ class Game:
 
             if self.current_floor == "F25" and self.resonator_state and self.resonator_state.get("boss_state") != "defeated":
                 center = self.resonator_state.get("center", (0.0, 0.0))
-                cx = center[0] * settings.MAP_SCALE
-                cy = center[1] * settings.MAP_SCALE
+                cx = center[0] * self.map_scale
+                cy = center[1] * self.map_scale
                 sprite = self.resonator_assets.get("resonator_core_placeholder")
                 if sprite:
                     hit_radius = max(sprite.get_width(), sprite.get_height()) * 0.45
@@ -3118,7 +3264,11 @@ class Game:
     def _restart_to_menu(self) -> None:
         self.start_menu.reset()
         self.pause_menu_active = False
+        self.achievements_active = False
         self.intro_active = False
+        self.load_menu_active = False
+        self.achievement_notice_text = ""
+        self.achievement_notice_timer = 0.0
         self.unlocked_weapons = {settings.DEFAULT_WEAPON}
         self.current_weapon = settings.DEFAULT_WEAPON
         self.weapon_ammo = {}
@@ -3236,7 +3386,7 @@ class Game:
             collider,
             (dx, dy),
             self.map_data.collision_grid,
-            cell_size=self.map_data.cell_size * settings.MAP_SCALE,
+            cell_size=self.map_data.cell_size * self.map_scale,
             substep=settings.COLLISION_SUBSTEP,
         )
         enemy["x"] = float(moved.centerx)
@@ -3315,7 +3465,7 @@ class Game:
             cell_size = max(1, self.map_data.cell_size)
             max_y = len(grid)
             max_x = len(grid[0]) if max_y else 0
-            scale = settings.MAP_SCALE
+            scale = self.map_scale
             for map_x, map_y in manual_points:
                 gx = int(map_x // cell_size)
                 gy = int(map_y // cell_size)
@@ -3343,7 +3493,7 @@ class Game:
                 return
         base_x, base_y = self.player_rect.center
         grid_w, grid_h = self.map_data.grid_size
-        cell_px = self.map_data.cell_size * settings.MAP_SCALE
+        cell_px = self.map_data.cell_size * self.map_scale
         start_cell = (
             max(0, min(grid_w - 1, int(base_x // cell_px))),
             max(0, min(grid_h - 1, int(base_y // cell_px))),
@@ -3492,8 +3642,47 @@ class Game:
                     break
         return best_cell
 
+    def _nearest_passable_cell(self, px: float, py: float, *, max_steps: int = 8) -> tuple[int, int] | None:
+        if not self.map_data:
+            return None
+        grid = self.map_data.collision_grid
+        if not grid:
+            return None
+        max_y = len(grid)
+        max_x = len(grid[0])
+        cell_size = max(1, int(self.map_data.cell_size))
+        start_x = max(0, min(max_x - 1, int(px // cell_size)))
+        start_y = max(0, min(max_y - 1, int(py // cell_size)))
+        if grid[start_y][start_x] in settings.PASSABLE_VALUES:
+            return (start_x, start_y)
+        visited = {(start_x, start_y)}
+        queue = deque([(start_x, start_y, 0)])
+        while queue:
+            cx, cy, steps = queue.popleft()
+            if steps >= max_steps:
+                continue
+            for nx, ny in ((cx + 1, cy), (cx - 1, cy), (cx, cy + 1), (cx, cy - 1)):
+                if (nx, ny) in visited:
+                    continue
+                if 0 <= nx < max_x and 0 <= ny < max_y:
+                    if grid[ny][nx] in settings.PASSABLE_VALUES:
+                        return (nx, ny)
+                    visited.add((nx, ny))
+                    queue.append((nx, ny, steps + 1))
+        return None
+
+    def _snap_to_passable(self, px: float, py: float, *, max_steps: int = 8) -> tuple[float, float]:
+        cell = self._nearest_passable_cell(px, py, max_steps=max_steps)
+        if not cell or not self.map_data:
+            return (px, py)
+        cx, cy = cell
+        cell_size = max(1, int(self.map_data.cell_size))
+        return ((cx + 0.5) * cell_size, (cy + 0.5) * cell_size)
+
     def _on_enemies_cleared(self) -> None:
         self.combat_active = False
+        if self.current_floor == "F50":
+            self._unlock_achievement("first_cleanup")
         if self.current_floor == "F40":
             self._lab_on_enemies_cleared()
             return
@@ -3569,7 +3758,7 @@ class Game:
     def _follow_path(self, dt: float) -> bool:
         if not self.map_data or not self.path:
             return False
-        cell_px = self.map_data.cell_size * settings.MAP_SCALE
+        cell_px = self.map_data.cell_size * self.map_scale
         next_node = self.path[0]
         target_pos = (next_node[0] * cell_px + cell_px // 2, next_node[1] * cell_px + cell_px // 2)
         vx = target_pos[0] - self.player_rect.centerx
@@ -3603,7 +3792,7 @@ class Game:
     def _replan_to_goal(self) -> None:
         if not self.map_data or not self.path_goal_cell:
             return
-        cell = self.map_data.cell_size * settings.MAP_SCALE
+        cell = self.map_data.cell_size * self.map_scale
         start = (self.player_rect.centerx // cell, self.player_rect.centery // cell)
         goal = self.path_goal_cell
         path_nodes = pathfinding.astar(
@@ -3641,7 +3830,7 @@ class Game:
                 if val in settings.PASSABLE_VALUES:
                     pygame.draw.rect(mini, settings.MINIMAP_WALKABLE, (int(x * scale), int(y * scale), cell_w, cell_w))
         # Player marker
-        cell = self.map_data.cell_size * settings.MAP_SCALE
+        cell = self.map_data.cell_size * self.map_scale
         px = int(self.player_rect.centerx / cell * scale)
         py = int(self.player_rect.centery / cell * scale)
         pygame.draw.circle(mini, settings.MINIMAP_PLAYER, (px, py), max(2, int(scale)))
@@ -3650,7 +3839,7 @@ class Game:
     # --- Interaction helpers ---
     def _interaction_zones(self) -> list[dict]:
         zones = settings.INTERACT_ZONES.get(self.current_floor, [])
-        scale = settings.MAP_SCALE
+        scale = self.map_scale
         scaled: list[dict] = []
         for z in zones:
             x1, y1, x2, y2 = z["rect"]
@@ -3769,10 +3958,20 @@ class Game:
             self._show_dialog(msg, title="终端")
             if term_id == "log_kaines_001":
                 self._set_quest_stage("elevator")
+                self._unlock_achievement("anchor_log")
             elif term_id == "log_ethics_73a":
                 self.logic_flags["terminal_read"] = True
                 if self.quest_stage == "logic_terminal":
                     self._set_quest_stage("logic_exit")
+                if not self.logic_flags.get("exit_unlocked"):
+                    self.logic_flags["exit_unlocked"] = True
+                    self.logic_flags["weapon_ready"] = True
+                    self.elevator_locked = False
+            elif term_id == "log_elara_audio":
+                if not self.archive_flags.get("exit_unlocked"):
+                    self.archive_flags["exit_unlocked"] = True
+                    self._archive_unlock_exit(show_dialog=False)
+                    self._set_quest_stage("archive_exit")
             elif term_id == "log_kaines_045":
                 if self.quest_stage == "resonator_log":
                     self._set_quest_stage("resonator_exit")
@@ -3782,6 +3981,8 @@ class Game:
                 return
             msg = self._frame_message(trig.get("id", ""))
             self._show_dialog(msg, title="相框")
+            if trig.get("id") == "family_photo":
+                self._unlock_achievement("anomaly_photo")
             if self.quest_stage == "explore":
                 self._start_frame_combat()
             return
@@ -3906,8 +4107,8 @@ class Game:
 
     def _draw_debug_coords(self) -> None:
         # Show player map coordinates in bottom-right for debugging
-        px = int(self.player_rect.centerx / settings.MAP_SCALE)
-        py = int(self.player_rect.centery / settings.MAP_SCALE)
+        px = int(self.player_rect.centerx / self.map_scale)
+        py = int(self.player_rect.centery / self.map_scale)
         text = f"({px}, {py})"
         surf = self.font_prompt.render(text, True, settings.PROMPT_TEXT)
         margin = 10
@@ -3940,8 +4141,6 @@ class Game:
         self.screen.blit(panel, (x, y))
 
     def _quest_lines(self) -> list[str]:
-        if self.current_floor == "F30" and getattr(self, 'logic_glitch_timer', 0.0) > 0.0:
-            return ["//DIRECTIVE: EXTRACT_CREATIVE_SOLUTION.FROM P-7", "//PRIORITY: 100% DATA EXTRACTION"]
         if self.quest_stage == "intro":
             return ["任务：等待系统初始化"]
         if self.quest_stage == "explore":
@@ -3973,11 +4172,11 @@ class Game:
         if self.quest_stage == "archive_flash":
             return ["任务：稳定认知", "提示：让记忆风暴自行散去"]
         if self.quest_stage == "archive_exit":
-            return ["任务：收集残余日志", "目标：前往北侧电梯"]
+            return ["任务：前往北侧电梯", "目标：离开记忆档案馆"]
         if self.quest_stage == "logic_intro":
             return ["任务：等待系统诊断"]
         if self.quest_stage == "logic_relays":
-            return ["任务：恢复逻辑核心供电", "目标：按顺序激活三座主继电器"]
+            return ["任务：稳定逻辑核心", "目标：切换服务器状态使三台全部点亮"]
         if self.quest_stage == "logic_terminal":
             return ["任务：确认伦理委员会记录", "目标：读取终端并准备撤离"]
         if self.quest_stage == "logic_exit":
@@ -4076,7 +4275,7 @@ class Game:
         sy = int(self.click_fx_pos[1] + self.map_offset[1])
         # simple shrinking circle effect
         t = self.click_fx_timer / settings.CLICK_FEEDBACK_DURATION
-        radius = int(settings.CLICK_FEEDBACK_RADIUS * settings.MAP_SCALE * t)
+        radius = int(settings.CLICK_FEEDBACK_RADIUS * self.map_scale * t)
         if radius <= 0:
             return
         pygame.draw.circle(self.screen, settings.CLICK_FEEDBACK_COLOR, (sx, sy), radius, width=2)
@@ -4216,6 +4415,7 @@ class Game:
             self.cutscene_active = False
             # unlock exploration task
             self._set_quest_stage("explore")
+            self._unlock_achievement("boot_sequence")
             return
         self.cutscene_char_progress = 0.0
         self.cutscene_done_line = False

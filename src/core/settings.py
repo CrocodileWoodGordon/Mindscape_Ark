@@ -74,14 +74,14 @@ PLAYER_COLLIDER_OFFSET_Y = 6  # map pixels; collider sits lower (toward feet)
 GUN_BULLET_SPEED = 520  # pixels per second in map space
 GUN_FIRE_COOLDOWN = 0.18  # time between shots
 GUN_RELOAD_TIME = 1.0
-GUN_CLIP_SIZE = 10
+GUN_CLIP_SIZE = 7
 GUN_BULLET_LIFETIME = 1.5
 GUN_BULLET_RADIUS = 3
 GUN_BULLET_COLOR = (255, 235, 120)
 PLAYER_BULLET_DAMAGE = 24
 
 # Weapon definitions (per-weapon tuning)
-WEAPON_SLOTS = ("sidearm", "entropy_rifle", "scattergun")
+WEAPON_SLOTS = ("sidearm", "scattergun", "entropy_rifle")
 DEFAULT_WEAPON = "sidearm"
 WEAPON_DEFS = {
     "sidearm": {
@@ -98,7 +98,7 @@ WEAPON_DEFS = {
         "auto_fire": False,
     },
     "entropy_rifle": {
-        "clip_size": 18,
+        "clip_size": 25,
         "fire_cooldown": 0.12,
         "reload_time": 1.15,
         "bullet_speed": 620,
@@ -111,7 +111,7 @@ WEAPON_DEFS = {
         "auto_fire": True,
     },
     "scattergun": {
-        "clip_size": 6,
+        "clip_size": 5,
         "fire_cooldown": 0.62,
         "reload_time": 1.4,
         "bullet_speed": 470,
@@ -195,16 +195,17 @@ INTERACT_ZONES = {
         {"id": "logic_error_entity", "type": "npc", "rect": (128, 188, 152, 212)},
     ],
     "F35": [
-        {"id": "archive_exit", "type": "exit", "rect": (300, 10, 340, 90), "to_floor": "F30"},
-        {"id": "log_elara_audio", "type": "terminal", "rect": (292, 330, 348, 388)},
+        {"id": "archive_exit", "type": "exit", "rect": (283, 149, 345, 185), "to_floor": "F30"},
+        {"id": "log_elara_audio", "type": "terminal", "rect": (300, 200, 350, 240)},
     ],
     "F30": [
-        {"id": "logic_exit", "type": "exit", "rect": (292, 12, 348, 84), "to_floor": "F25"},
-        {"id": "relay_left", "type": "switch", "rect": (188, 286, 236, 346)},
-        {"id": "relay_right", "type": "switch", "rect": (404, 286, 452, 346)},
-        {"id": "relay_center", "type": "switch", "rect": (296, 242, 344, 302)},
-        {"id": "log_ethics_73a", "type": "terminal", "rect": (72, 448, 160, 524)},
-        {"id": "logic_weapon_cache", "type": "switch", "rect": (520, 448, 596, 520)},
+        {"id": "logic_weapon_cache", "type": "switch", "rect": (74, 275, 158, 359)},
+        {"id": "logic_exit", "type": "exit", "rect": (240, 219, 400, 275), "to_floor": "F25"},
+        {"id": "log_ethics_73a", "type": "terminal", "rect": (493, 194, 565, 357)},
+        {"id": "logic_server_1", "type": "switch", "rect": (107, 453, 266, 630)},
+        {"id": "logic_server_2", "type": "switch", "rect": (107, 652, 266, 837)},
+        {"id": "logic_server_3", "type": "switch", "rect": (323, 652, 477, 837)},
+        {"id": "logic_server_reset", "type": "switch", "rect": (493, 857, 566, 935)},
     ],
     "F25": [
         {"id": "resonator_exit", "type": "exit", "rect": (148, 6, 172, 42), "to_floor": "F15"},
@@ -246,6 +247,26 @@ DIALOG_LIFETIME = 4.0
 PLAYER_HIT_FLASH_TIME = 0.25
 PLAYER_HIT_FLASH_COLOR = (255, 80, 120, 140)
 
+# Achievements (story-progress milestones; no rewards attached)
+ACHIEVEMENTS = [
+    {"id": "boot_sequence", "title": "系统重启", "desc": "完成启动序列与引导，进入行动阶段。"},
+    {"id": "anomaly_photo", "title": "相框讯号", "desc": "查看宿舍相框中的异常合影。"},
+    {"id": "first_cleanup", "title": "初次清除", "desc": "清除苏醒之舱内首批数据畸变体。"},
+    {"id": "anchor_log", "title": "锚定记录", "desc": "读取凯恩斯日志 001。"},
+    {"id": "sensory_choice", "title": "感官抉择", "desc": "在感官回廊中选择战斗或绕行。"},
+    {"id": "lab_first_trap", "title": "感官裂隙", "desc": "触发感官实验室首次陷阱。"},
+    {"id": "lab_resolved", "title": "异常收束", "desc": "处理逻辑错误实体并稳定实验室。"},
+    {"id": "lab_unlock", "title": "通行权限", "desc": "启动感官实验室电梯权限开关。"},
+    {"id": "archive_core", "title": "记忆压制", "desc": "击溃记忆吞噬者并完成回闪。"},
+    {"id": "archive_phase_three", "title": "红色脉冲", "desc": "记忆核心进入最终暴走阶段。"},
+    {"id": "logic_relays", "title": "逻辑复位", "desc": "同步三台服务器，恢复逻辑核心秩序。"},
+    {"id": "logic_glitch", "title": "指令噪声", "desc": "遭遇逻辑核心指令错乱。"},
+    {"id": "weapon_cache", "title": "散射火力", "desc": "解锁霰弹枪缓存。"},
+    {"id": "resonator_echo", "title": "回声倾听者", "desc": "与六位情绪回声完成对话。"},
+    {"id": "resonator_silence", "title": "共鸣平息", "desc": "击败情绪污染源。"},
+]
+ACHIEVEMENT_NOTICE_DURATION = 2.2
+
 # Click feedback
 CLICK_FEEDBACK_COLOR = (255, 230, 120)
 CLICK_FEEDBACK_DURATION = 0.2
@@ -258,10 +279,10 @@ UI_FONT_NAME = None  # use default
 FLOOR_IMAGE_FILES = {
     "floor50": IMAGES_DIR / "Floor50.png",
     "floor40": IMAGES_DIR / "Floor40.png",
-    "floor35": IMAGES_DIR / "Floor_35.png",
-    "floor30": None,
+    "floor35": IMAGES_DIR / "Floor35.png",
+    "floor30": IMAGES_DIR / "Floor30.png",
 }
-ARCHIVE_BOSS_IMAGE = IMAGES_DIR / "Floor_35_2.png"
+ARCHIVE_BOSS_IMAGE = IMAGES_DIR / "Floor35_2.png"
 
 
 # Gameplay placeholders

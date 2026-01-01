@@ -14,6 +14,28 @@
 - Constructed the Memory Archive (Floor 35): maze collision + map image, ambient anomaly spawns, multi-phase boss encounter, flashback sequence, and elevator/log gating into Floor 30.
 - Engineered the Logic Core (Floor 30): relay-sequencing puzzle, UI glitch vignette, failure feedback damage, weapon cache reward, ethics log gating, and elevator unlock toward Floor 25.
 - Implemented an ESC-driven pause menu overlay with selectable options, plus exit-to-desktop and return-to-title wiring.
+- Adjusted the pause menu confirm modal layout to prevent overlap between the unsaved warning text and option buttons.
+- Added close (X) buttons to the pause menu and the unsaved-confirm modal.
+- Completed the achievements system with story-based milestones, unlock hooks, and an achievements screen showing completion counts.
+- Added a small achievement unlock toast during gameplay.
+- Regenerated Floor 35 collision grid from Floor35_mask.png and added spawn clamping to keep archive boss/minions in walkable cells.
+- Adjusted the Floor 35 player spawn point to avoid spawning inside walls when arriving from Floor 40.
+- Moved the Floor 35 spawn point up by 30px to prevent getting stuck after teleport.
+- Updated Floor 35 exit interaction zone and replaced terminal gating with an automatic audio dialog + elevator unlock after the boss sequence.
+- Moved the Floor 35 terminal interaction region to the new coordinates.
+- Restored Floor 35 terminal availability after the boss audio sequence so the prompt appears again.
+- Regenerated Floor 25 collision grid from Floor25_mask.png and adjusted the spawn to keep 50px wall clearance.
+- Updated the Floor 25 spawn position per latest coordinates request.
+- Expanded achievements list and added a scrollable achievements panel with draggable scrollbar and mouse wheel support.
+- Clipped the achievements list rendering so rows no longer overflow the panel.
+- Added a load menu listing all saves with timestamps for selection when loading.
+- Stored save timestamps and surfaced them in the load list so players can choose by time.
+- Renamed Floor 35 image assets to Floor35.png and Floor35_2.png with code/map references updated.
+- Rebuilt Floor 30 map (640x1280) collision from Floor30_mask.png, refreshed interaction zones from Floor30_logic.png, and rewired the server toggle puzzle with terminal/elevator/shotgun unlock flow.
+- Added per-floor map scaling so Floor 30 renders at one-third the normal zoom.
+- Updated weapon slot order and clip sizes (sidearm 7, scattergun 5, rifle 25).
+- Ensured Floor 35 elevator unlocks when the audio terminal is read.
+- Adjusted Floor 35 boss aftermath so the audio auto-plays, elevator unlocks immediately, and the quest/terminal availability update after the audio finishes.
 
 ## In Progress
 - Pause menu options for save/achievements are stubbed and awaiting full implementations.
