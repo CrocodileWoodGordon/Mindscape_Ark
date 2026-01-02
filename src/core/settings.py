@@ -18,6 +18,7 @@ MAP_FILES = {
     "F35": MAPS_DIR / "floor35.json",
     "F30": MAPS_DIR / "floor30.json",
     "F25": MAPS_DIR / "floor25.json",
+    "F15": MAPS_DIR / "floor15.json",
     "F10": MAPS_DIR / "floor10.json",
 }
 START_FLOOR = "F50"
@@ -127,7 +128,7 @@ WEAPON_DEFS = {
 }
 
 # Boss tuning
-BOSS_HP_SCALE_WITH_RIFLE = 3
+BOSS_HP_SCALE_WITH_RIFLE = 1
 
 # Enemies (tutorial placeholders)
 ENEMY_COLOR = (255, 120, 140)
@@ -179,6 +180,7 @@ INTERACT_MASKS = {
     "F35": None,
     "F30": None,
     "F25": None,
+    "F15": None,
     "F10": None,
 }
 INTERACT_MASK_RADIUS = 12  # map pixels radius to consider near a red zone
@@ -191,10 +193,8 @@ INTERACT_ZONES = {
         {"id": "log_kaines_001", "type": "terminal", "rect": (190, 89, 305, 140)},
     ],
     "F40": [
-        {"id": "lab_exit", "type": "exit", "rect": (285, 285, 315, 315), "to_floor": "F35"},
-        {"id": "log_experiment_7g", "type": "terminal", "rect": (268, 268, 292, 292)},
-        {"id": "lab_switch", "type": "switch", "rect": (292, 260, 316, 284)},
-        {"id": "logic_error_entity", "type": "npc", "rect": (128, 188, 152, 212)},
+        {"id": "lab_exit", "type": "exit", "rect": (464, 464, 560, 560), "to_floor": "F35"},
+        {"id": "logic_error_entity", "type": "npc", "rect": (480, 140, 540, 190)},
     ],
     "F35": [
         {"id": "archive_exit", "type": "exit", "rect": (283, 149, 345, 185), "to_floor": "F30"},
@@ -219,6 +219,9 @@ INTERACT_ZONES = {
         {"id": "resonator_npc_fear", "type": "npc", "rect": (52, 130, 104, 196)},
         {"id": "resonator_core", "type": "switch", "rect": (148, 140, 172, 184)},
         {"id": "log_kaines_045", "type": "terminal", "rect": (148, 140, 172, 184)},
+    ],
+    "F15": [
+        {"id": "mirror_exit", "type": "exit", "rect": (928, 480, 1008, 548), "to_floor": "F10"},
     ],
     "F10": [
         {"id": "sanctuary_exit", "type": "exit", "rect": (450, 870, 516, 936), "to_floor": "F25"},
@@ -259,10 +262,8 @@ ACHIEVEMENTS = [
     {"id": "anomaly_photo", "title": "相框讯号", "desc": "查看宿舍相框中的异常合影。"},
     {"id": "first_cleanup", "title": "初次清除", "desc": "清除苏醒之舱内首批数据畸变体。"},
     {"id": "anchor_log", "title": "锚定记录", "desc": "读取凯恩斯日志 001。"},
-    {"id": "sensory_choice", "title": "感官抉择", "desc": "在感官回廊中选择战斗或绕行。"},
-    {"id": "lab_first_trap", "title": "感官裂隙", "desc": "触发感官实验室首次陷阱。"},
     {"id": "lab_resolved", "title": "异常收束", "desc": "处理逻辑错误实体并稳定实验室。"},
-    {"id": "lab_unlock", "title": "通行权限", "desc": "启动感官实验室电梯权限开关。"},
+    {"id": "lab_unlock", "title": "通行权限", "desc": "解锁感官实验室电梯权限。"},
     {"id": "archive_core", "title": "记忆压制", "desc": "击溃记忆吞噬者并完成回闪。"},
     {"id": "archive_phase_three", "title": "红色脉冲", "desc": "记忆核心进入最终暴走阶段。"},
     {"id": "logic_relays", "title": "逻辑复位", "desc": "同步三台服务器，恢复逻辑核心秩序。"},
@@ -289,6 +290,7 @@ FLOOR_IMAGE_FILES = {
     "floor40": IMAGES_DIR / "Floor40.png",
     "floor35": IMAGES_DIR / "Floor35.png",
     "floor30": IMAGES_DIR / "Floor30.png",
+    "floor15": IMAGES_DIR / "Floor15.png",
     "floor10": IMAGES_DIR / "Floor10.png",
 }
 ARCHIVE_BOSS_IMAGE = IMAGES_DIR / "Floor35_2.png"

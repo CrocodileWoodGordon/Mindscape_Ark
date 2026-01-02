@@ -46,6 +46,7 @@ class Game:
         self.map_scale = settings.MAP_SCALE
         self._base_collision_grid: list[list[int]] = []
         self.lab_surface: pygame.Surface | None = None
+        self.lab_npc_sprite: pygame.Surface | None = None
         self.player_rect = pygame.Rect(0, 0, *settings.PLAYER_SIZE)  # map-space rect
         self._player_idle_sprite = self._load_player_sprite()
         self._player_walk_frames = self._load_player_walk_frames()
@@ -56,6 +57,8 @@ class Game:
         self.path: list[tuple[int, int]] = []  # list of map-cell nodes
         self.path_target: tuple[int, int] | None = None
         self.path_goal_cell: tuple[int, int] | None = None
+        self.nav_cache_player: dict | None = None
+        self.nav_cache_enemy: dict | None = None
         self.player_move_speed = float(settings.PLAYER_SPEED)
         self.speed_bonus = 1.0
         self.interaction_target: dict | None = None
@@ -109,6 +112,9 @@ class Game:
         self.lab_barriers: list[dict] = []
         self.lab_npc_state: dict[str, dict] = {}
         self.lab_branch = ""
+        self.lab_gate_cells: list[tuple[int, int]] = []
+        self.lab_path_cache_player: dict[tuple[tuple[int, int], tuple[int, int]], list[tuple[int, int]]] = {}
+        self.lab_path_cache_enemy: dict[tuple[tuple[int, int], tuple[int, int]], list[tuple[int, int]]] = {}
         self.archive_center = (0.0, 0.0)
         self.archive_core_radius = 0.0
         self.archive_warning_radius = 0.0
@@ -126,6 +132,8 @@ class Game:
         self.resonator_state: dict[str, object] = {}
         self.resonator_projectiles: list[dict] = []
         self.sanctuary_state: dict[str, object] = {}
+        self.mirror_state: dict[str, object] = {}
+        self.mirror_assets: dict[str, pygame.Surface] = {}
         self.aera_sprite: pygame.Surface | None = None
         self.logic_flags: dict[str, bool] = {}
         self.logic_sequence: list[str] = []
@@ -226,6 +234,10 @@ class Game:
         self.lab_barriers = []
         self.lab_npc_state = {}
         self.lab_branch = ""
+        self.lab_npc_sprite = None
+        self.lab_gate_cells = []
+        self.lab_path_cache_player = {}
+        self.lab_path_cache_enemy = {}
         self.archive_center = (0.0, 0.0)
         self.archive_core_radius = 0.0
         self.archive_warning_radius = 0.0
@@ -238,6 +250,7 @@ class Game:
         self.resonator_projectiles = []
         self.resonator_state = {}
         self.sanctuary_state = {}
+        self.mirror_state = {}
         self.aera_sprite = None
         self.archive_flash_sequence = []
         self.archive_pulse_state = {}
@@ -650,6 +663,7 @@ class Game:
             "lab_npc_state": self.lab_npc_state,
             "resonator_state": self.resonator_state,
             "sanctuary_state": self.sanctuary_state,
+            "mirror_state": self.mirror_state,
             "story_flags": self.story_flags,
             "achievements": self.achievements,
         }
@@ -745,6 +759,12 @@ class Game:
             self.sanctuary_state = sanctuary_state
             if self.current_floor == "F10":
                 self.aera_sprite = self._load_aera_sprite()
+        mirror_state = data.get("mirror_state")
+        if isinstance(mirror_state, dict):
+            self.mirror_state = mirror_state
+            if self.current_floor == "F15":
+                self._mirror_load_assets()
+                self._mirror_post_load()
         self.max_floor_reached = max(
             self._floor_value(self.current_floor),
             int(data.get("max_floor_reached", self.max_floor_reached)),
@@ -893,6 +913,22 @@ class Game:
             for y, row in enumerate(self._base_collision_grid):
                 if y < len(self.map_data.collision_grid):
                     self.map_data.collision_grid[y] = row[:]  # restore base grid snapshot
+        self.nav_cache_player = None
+        self.nav_cache_enemy = None
+        if self.current_floor in {"F50", "F40", "F35", "F30", "F25", "F15", "F10"}:
+            self.nav_cache_player = pathfinding.build_nav_cache(
+                self.map_data.collision_grid,
+                settings.PASSABLE_VALUES,
+                cell_size=self.map_data.cell_size,
+                actor_size=settings.PLAYER_SIZE,
+            )
+            enemy_size = (settings.ENEMY_RADIUS * 2, settings.ENEMY_RADIUS * 2)
+            self.nav_cache_enemy = pathfinding.build_nav_cache(
+                self.map_data.collision_grid,
+                settings.PASSABLE_VALUES,
+                cell_size=self.map_data.cell_size,
+                actor_size=enemy_size,
+            )
         if self.current_floor == "F40":
             self._enter_floor_f40()
         elif self.current_floor == "F35":
@@ -901,6 +937,8 @@ class Game:
             self._enter_floor_f30()
         elif self.current_floor == "F25":
             self._enter_floor_f25()
+        elif self.current_floor == "F15":
+            self._enter_floor_f15()
         elif self.current_floor == "F10":
             self._enter_floor_f10()
         else:
@@ -1047,6 +1085,59 @@ class Game:
         self._set_quest_stage("resonator_intro")
         self.floor_timers["resonator_intro_delay"] = 0.6
 
+    def _enter_floor_f15(self) -> None:
+        if not self.map_data:
+            return
+        width, height = self.map_data.size_pixels
+        if not width or not height:
+            if self.map_surface:
+                w, h = self.map_surface.get_size()
+                width = w // max(1, self.map_scale)
+                height = h // max(1, self.map_scale)
+            else:
+                width = height = 0
+        axis_x = width / 2.0
+        axis_col = int(axis_x // max(1, self.map_data.cell_size))
+        clip_size = self._weapon_clip_size("entropy_rifle")
+        reload_time = float(self._weapon_config("entropy_rifle").get("reload_time", settings.GUN_RELOAD_TIME)) + 2.0
+        self.mirror_state = {
+            "axis_x": axis_x,
+            "axis_col": axis_col,
+            "axis_locked": True,
+            "intro_timer": 0.6,
+            "intro_shown": False,
+            "cleanup_done": False,
+            "mirror_talk_ready": False,
+            "mirror_talked": False,
+            "exit_unlocked": False,
+            "boss_state": "sync",
+            "boss_hp": 240.0,
+            "boss_max_hp": 240.0,
+            "boss_x": 0.0,
+            "boss_y": 0.0,
+            "boss_flash": 0.0,
+            "boss_fire_timer": 0.0,
+            "boss_reload_timer": 0.0,
+            "boss_reload_time": reload_time,
+            "boss_ammo": clip_size,
+            "boss_strategy": "chase",
+            "boss_pending": None,
+            "boss_decision_timer": 0.0,
+            "boss_last_can_shoot": None,
+            "boss_path": [],
+            "boss_path_goal": None,
+            "boss_path_timer": 0.0,
+            "shatter_particles": [],
+            "rifle_drop": None,
+            "rifle_claimed": False,
+        }
+        self._mirror_load_assets()
+        self._mirror_apply_axis_lock(True)
+        self._mirror_spawn_enemies()
+        self.combat_active = bool(self.enemies)
+        self.elevator_locked = True
+        self._set_quest_stage("mirror_intro")
+
     def _enter_floor_f10(self) -> None:
         if not self.map_data:
             return
@@ -1055,7 +1146,9 @@ class Game:
         self.sanctuary_state = {
             "intro_timer": 0.6,
             "intro_shown": False,
-            "decision_timer": 120.0,
+            "aera_dialog_started": False,
+            "aera_dialog_active": False,
+            "aera_dialog_done": False,
             "defense_active": False,
             "wave_index": 0,
             "wave_total": 5,
@@ -1078,7 +1171,7 @@ class Game:
         self.aera_sprite = self._load_aera_sprite()
         self.combat_active = False
         self.elevator_locked = True
-        self._set_quest_stage("sanctuary_agent")
+        self._set_quest_stage("sanctuary_find")
 
     def _start_sanctuary_defense(self) -> None:
         state = self.sanctuary_state
@@ -1086,11 +1179,11 @@ class Game:
             return
         state["defense_active"] = True
         state["wave_index"] = 0
-        state["wave_active"] = False
-        state["next_wave_timer"] = 0.4
-        state["decision_timer"] = 0.0
+        state["wave_active"] = True
+        state["next_wave_timer"] = 0.0
         self.combat_active = True
         self._set_quest_stage("sanctuary_agent")
+        self._sanctuary_spawn_wave()
         self._show_ambient_dialog([
             "艾拉：别靠近我！守住核心装置！",
             "系统净化者正在逼近！"
@@ -1099,38 +1192,30 @@ class Game:
     def _sanctuary_spawn_wave(self) -> None:
         if not self.map_data or not self.sanctuary_state:
             return
-        core_pos = self.sanctuary_state.get("core_pos", (0.0, 0.0))
-        cell_size = self.map_data.cell_size
-        grid_w, grid_h = self.map_data.grid_size
-        core_cell = (
-            max(0, min(grid_w - 1, int(core_pos[0] // cell_size))),
-            max(0, min(grid_h - 1, int(core_pos[1] // cell_size))),
-        )
-        accessible = self._collect_accessible_cells(core_cell, 80)
-        if not accessible:
-            return
-        taken_cells: set[tuple[int, int]] = {core_cell}
-        offsets = [(-12, 0), (12, 0), (0, -12), (0, 12), (-10, 10), (10, -10), (10, 10), (-10, -10)]
+        manual_points = [(332, 290), (179, 483), (479, 811), (813, 506), (629, 287)]
         spawned: list[dict] = []
-        cell_px = self.map_data.cell_size * self.map_scale
-        max_cell_distance = 20
-        for ox, oy in offsets:
-            if len(spawned) >= 5:
-                break
-            desired = (
-                max(0, min(grid_w - 1, core_cell[0] + ox)),
-                max(0, min(grid_h - 1, core_cell[1] + oy)),
-            )
-            spawn_cell = self._pick_spawn_cell(desired, accessible, taken_cells, max_cell_distance)
-            if not spawn_cell:
-                continue
-            taken_cells.add(spawn_cell)
-            cx = spawn_cell[0] * cell_px + cell_px // 2
-            cy = spawn_cell[1] * cell_px + cell_px // 2
+        grid = self.map_data.collision_grid
+        cell_size = max(1, self.map_data.cell_size)
+        max_y = len(grid)
+        max_x = len(grid[0]) if max_y else 0
+        scale = self.map_scale
+        for map_x, map_y in manual_points:
+            gx = int(map_x // cell_size)
+            gy = int(map_y // cell_size)
+            if not (0 <= gx < max_x and 0 <= gy < max_y):
+                snap = self._snap_to_passable(map_x, map_y, max_steps=16)
+                map_x, map_y = snap
+                gx = int(map_x // cell_size)
+                gy = int(map_y // cell_size)
+            if 0 <= gx < max_x and 0 <= gy < max_y and grid[gy][gx] not in settings.PASSABLE_VALUES:
+                snap = self._snap_to_passable(map_x, map_y, max_steps=16)
+                map_x, map_y = snap
+            px = int(map_x * scale)
+            py = int(map_y * scale)
             hp = float(settings.PLAYER_BULLET_DAMAGE * 4)
             spawned.append({
-                "x": float(cx),
-                "y": float(cy),
+                "x": float(px),
+                "y": float(py),
                 "hp": hp,
                 "max_hp": hp,
                 "state": "idle",
@@ -1145,59 +1230,44 @@ class Game:
                 "attack_anim_timer": 0.0,
                 "color": (230, 235, 245),
             })
-        if len(spawned) < 5:
-            for cell in accessible:
-                if len(spawned) >= 5:
-                    break
-                if cell in taken_cells:
-                    continue
-                taken_cells.add(cell)
-                cx = cell[0] * cell_px + cell_px // 2
-                cy = cell[1] * cell_px + cell_px // 2
-                hp = float(settings.PLAYER_BULLET_DAMAGE * 4)
-                spawned.append({
-                    "x": float(cx),
-                    "y": float(cy),
-                    "hp": hp,
-                    "max_hp": hp,
-                    "state": "idle",
-                    "fade_timer": settings.ENEMY_FADE_DURATION,
-                    "flash_timer": 0.0,
-                    "aggro": False,
-                    "aggro_radius": 520 * self.map_scale,
-                    "lose_radius": 680 * self.map_scale,
-                    "move_speed": settings.ENEMY_MOVE_SPEED * 1.15,
-                    "show_health": 0.0,
-                    "attack_timer": random.uniform(0.3, settings.ENEMY_ATTACK_COOLDOWN),
-                    "attack_anim_timer": 0.0,
-                    "color": (230, 235, 245),
-                })
         self.enemies = spawned
 
     def _update_floor_f10(self, dt: float) -> None:
         if not self.sanctuary_state:
             return
         state = self.sanctuary_state
-        if not state.get("intro_shown") and state.get("aera_state") == "active":
+        if not state.get("intro_shown"):
             timer = float(state.get("intro_timer", 0.0)) - dt
             if timer <= 0.0:
                 state["intro_shown"] = True
                 self._show_ambient_dialog([
-                    "Custodian! You're here! We've found evidence, the System is--"
-                ], title="艾拉", lifetime=5.0)
+                    "指引者：指令确认。找到艾拉并注射认知溶解剂。",
+                ], title="指引者", lifetime=5.0)
             else:
                 state["intro_timer"] = timer
 
+        if state.get("intro_shown") and state.get("aera_state") == "active":
+            if not state.get("aera_dialog_started") and not self.dialog_lines:
+                px, py = self.player_rect.center
+                for trig in self._interaction_zones():
+                    if trig.get("id") != "aera":
+                        continue
+                    x1, y1, x2, y2 = trig["rect"]
+                    if x1 <= px <= x2 and y1 <= py <= y2:
+                        state["aera_dialog_started"] = True
+                        state["aera_dialog_active"] = True
+                        self._show_dialog([
+                            "Custodian! You're here! We've found evidence, the System is--"
+                        ], title="艾拉")
+                    break
+            if state.get("aera_dialog_active") and not self.dialog_lines:
+                state["aera_dialog_active"] = False
+                state["aera_dialog_done"] = True
+                self._set_quest_stage("sanctuary_agent")
+                self._start_sanctuary_defense()
+
         if state.get("aera_state") == "dissolving":
             self._update_aera_dissolve(dt)
-
-        if not state.get("branch") and not state.get("defense_active"):
-            decision_timer = float(state.get("decision_timer", 0.0)) - dt
-            if decision_timer <= 0.0:
-                state["decision_timer"] = 0.0
-                self._start_sanctuary_defense()
-            else:
-                state["decision_timer"] = decision_timer
 
         if state.get("defense_active") and not state.get("battle_complete"):
             if state.get("wave_active") and not self.enemies:
@@ -1355,11 +1425,9 @@ class Game:
         self._set_quest_stage("lab_intro")
         self.floor_flags.update({
             "lab_intro_line": False,
-            "lab_trap1_triggered": False,
-            "lab_trap1_resolved": False,
-            "lab_branch_resolved": False,
-            "lab_switch_activated": False,
-            "lab_bypass_spawns": False,
+            "lab_cleanup_ready": False,
+            "lab_cleanup_spawned": False,
+            "lab_exit_unlocked": False,
         })
         self.floor_timers["lab_intro_delay"] = 0.5
         self.lab_traps = []
@@ -1371,8 +1439,9 @@ class Game:
         self.archive_boss: dict | None = None
         self.archive_flags: dict[str, bool] = {}
         self.lab_npc_state = {}
-        self._lab_init_traps()
         self._lab_refresh_surface()
+        self._lab_load_npc_sprite()
+        self._lab_build_path_cache()
 
     def _lab_unit_scale(self) -> int:
         if not self.map_data:
@@ -1423,13 +1492,30 @@ class Game:
         s = self.map_scale
         return (base_x * s, base_y * s)
 
+    def _lab_cells_from_rect(self, px: float, py: float, pw: float, ph: float) -> list[tuple[int, int]]:
+        if not self.map_data:
+            return []
+        cell_size = max(1, int(self.map_data.cell_size))
+        grid = self.map_data.collision_grid
+        x1 = max(0, int(px // cell_size))
+        y1 = max(0, int(py // cell_size))
+        x2 = min(len(grid[0]) if grid else 0, int((px + pw) // cell_size) + 1)
+        y2 = min(len(grid), int((py + ph) // cell_size) + 1)
+        cells: list[tuple[int, int]] = []
+        for cy in range(y1, y2):
+            row = grid[cy]
+            for cx in range(x1, x2):
+                if 0 <= cx < len(row):
+                    cells.append((cy, cx))
+        return cells
+
     def _lab_init_traps(self) -> None:
         if not self.map_data:
             return
         self.lab_traps = []
-        trap1_cells = self._lab_cells_from_units(5, 1, 3, 2)
-        trap2_cells = self._lab_cells_from_units(1, 5, 2, 3)
-        trap3_cells = self._lab_cells_from_units(5, 10, 3, 2)
+        trap1_cells = self._lab_cells_from_rect(720, 480, 40, 120)
+        trap2_cells = self._lab_cells_from_rect(80, 360, 40, 160)
+        trap3_cells = self._lab_cells_from_rect(440, 820, 140, 40)
         self.lab_traps.append({
             "id": "trap1",
             "cells": trap1_cells,
@@ -1449,7 +1535,7 @@ class Game:
             "state": "idle",
             "timer": 3.0,
             "void_duration": 1.4,
-            "cycle_interval": 3.6,
+            "cycle_interval": 4.2,
             "active": False,
             "permanent": False,
             "sealed_announced": False,
@@ -1461,7 +1547,7 @@ class Game:
             "state": "idle",
             "timer": 2.4,
             "void_duration": 1.6,
-            "cycle_interval": 4.2,
+            "cycle_interval": 4.8,
             "active": False,
             "permanent": False,
             "sealed_announced": False,
@@ -1473,6 +1559,14 @@ class Game:
     def _lab_refresh_surface(self) -> None:
         if not self.map_data:
             self.lab_surface = None
+            return
+        if self.map_surface:
+            self.lab_surface = self.map_surface
+            map_w, map_h = self.map_surface.get_size()
+            self.map_offset = (
+                (settings.WINDOW_WIDTH - map_w) // 2,
+                (settings.WINDOW_HEIGHT - map_h) // 2,
+            )
             return
         cell_px = self.map_data.cell_size * self.map_scale
         width = self.map_data.grid_size[0] * cell_px
@@ -1512,6 +1606,189 @@ class Game:
             (settings.WINDOW_HEIGHT - map_h) // 2,
         )
 
+    def _lab_npc_rect(self) -> pygame.Rect | None:
+        for trig in settings.INTERACT_ZONES.get("F40", []):
+            if trig.get("id") == "logic_error_entity":
+                x1, y1, x2, y2 = trig["rect"]
+                return pygame.Rect(x1, y1, x2 - x1, y2 - y1)
+        return None
+
+    def _lab_load_npc_sprite(self) -> None:
+        self.lab_npc_sprite = None
+        path = settings.IMAGES_DIR / "Floor40_npc_fallen.png"
+        if not path.exists():
+            return
+        try:
+            sprite = pygame.image.load(str(path)).convert_alpha()
+        except Exception:
+            return
+        rect = self._lab_npc_rect()
+        if rect:
+            target_w = max(1, int(rect.width * self.map_scale))
+            target_h = max(1, int(rect.height * self.map_scale))
+            if sprite.get_width() != target_w or sprite.get_height() != target_h:
+                sprite = pygame.transform.scale(sprite, (target_w, target_h))
+        self.lab_npc_sprite = sprite
+
+    def _lab_gate_positions(self) -> list[tuple[float, float]]:
+        if not self.map_data:
+            return []
+        width, height = self.map_data.size_pixels
+        if not width or not height:
+            if self.map_surface:
+                w, h = self.map_surface.get_size()
+                width = w // max(1, self.map_scale)
+                height = h // max(1, self.map_scale)
+            else:
+                width = height = 0
+        if not width or not height:
+            return []
+        positions = [
+            (width * 0.25, height * 0.5),
+            (width * 0.5, height * 0.25),
+            (width * 0.75, height * 0.5),
+            (width * 0.5, height * 0.75),
+        ]
+        for trig in settings.INTERACT_ZONES.get("F40", []):
+            if trig.get("id") in {"lab_exit", "logic_error_entity"}:
+                x1, y1, x2, y2 = trig["rect"]
+                positions.append(((x1 + x2) / 2, (y1 + y2) / 2))
+        return positions
+
+    def _lab_build_gate_paths(
+        self,
+        gates: list[tuple[int, int]],
+        actor_size: tuple[int, int],
+        nav_cache: dict | None,
+    ) -> dict[tuple[tuple[int, int], tuple[int, int]], list[tuple[int, int]]]:
+        if not self.map_data or not nav_cache:
+            return {}
+        walkable = nav_cache.get("walkable")
+        usable = [g for g in gates if walkable and walkable[g[1]][g[0]]]
+        cache: dict[tuple[tuple[int, int], tuple[int, int]], list[tuple[int, int]]] = {}
+        for idx, start in enumerate(usable):
+            for goal in usable[idx + 1:]:
+                path_nodes = pathfinding.astar(
+                    self.map_data.collision_grid,
+                    start,
+                    goal,
+                    settings.PASSABLE_VALUES,
+                    cell_size=self.map_data.cell_size,
+                    actor_size=actor_size,
+                    nav_cache=nav_cache,
+                )
+                if len(path_nodes) > 1:
+                    cache[(start, goal)] = path_nodes
+                    cache[(goal, start)] = list(reversed(path_nodes))
+        return cache
+
+    def _lab_build_path_cache(self) -> None:
+        self.lab_gate_cells = []
+        self.lab_path_cache_player = {}
+        self.lab_path_cache_enemy = {}
+        if not self.map_data:
+            return
+        cell_size = max(1, int(self.map_data.cell_size))
+        gates: list[tuple[int, int]] = []
+        for px, py in self._lab_gate_positions():
+            sx, sy = self._snap_to_passable(px, py, max_steps=10)
+            cell = (int(sx // cell_size), int(sy // cell_size))
+            if cell not in gates:
+                gates.append(cell)
+        self.lab_gate_cells = gates
+        if not gates:
+            return
+        enemy_size = (settings.ENEMY_RADIUS * 2, settings.ENEMY_RADIUS * 2)
+        self.lab_path_cache_player = self._lab_build_gate_paths(
+            gates,
+            settings.PLAYER_SIZE,
+            self.nav_cache_player,
+        )
+        self.lab_path_cache_enemy = self._lab_build_gate_paths(
+            gates,
+            enemy_size,
+            self.nav_cache_enemy,
+        )
+
+    def _lab_nearest_gate(self, cell: tuple[int, int]) -> tuple[int, int] | None:
+        if not self.lab_gate_cells:
+            return None
+        return min(
+            self.lab_gate_cells,
+            key=lambda gate: abs(gate[0] - cell[0]) + abs(gate[1] - cell[1]),
+        )
+
+    def _lab_astar_via_cache(
+        self,
+        start: tuple[int, int],
+        goal: tuple[int, int],
+        *,
+        actor_size: tuple[int, int],
+        nav_cache: dict | None,
+        cache: dict[tuple[tuple[int, int], tuple[int, int]], list[tuple[int, int]]],
+    ) -> list[tuple[int, int]]:
+        if not self.map_data or not cache:
+            return []
+        start_gate = self._lab_nearest_gate(start)
+        goal_gate = self._lab_nearest_gate(goal)
+        if not start_gate or not goal_gate or start_gate == goal_gate:
+            return []
+        gate_path = cache.get((start_gate, goal_gate))
+        if not gate_path:
+            return []
+        to_gate = pathfinding.astar(
+            self.map_data.collision_grid,
+            start,
+            start_gate,
+            settings.PASSABLE_VALUES,
+            cell_size=self.map_data.cell_size,
+            actor_size=actor_size,
+            nav_cache=nav_cache,
+        )
+        if len(to_gate) <= 1:
+            return []
+        from_gate = pathfinding.astar(
+            self.map_data.collision_grid,
+            goal_gate,
+            goal,
+            settings.PASSABLE_VALUES,
+            cell_size=self.map_data.cell_size,
+            actor_size=actor_size,
+            nav_cache=nav_cache,
+        )
+        if len(from_gate) <= 1:
+            return []
+        return to_gate + gate_path[1:] + from_gate[1:]
+
+    def _lab_astar(
+        self,
+        start: tuple[int, int],
+        goal: tuple[int, int],
+        *,
+        actor_size: tuple[int, int],
+        nav_cache: dict | None,
+        cache: dict[tuple[tuple[int, int], tuple[int, int]], list[tuple[int, int]]],
+    ) -> list[tuple[int, int]]:
+        if self.current_floor == "F40":
+            cached = self._lab_astar_via_cache(
+                start,
+                goal,
+                actor_size=actor_size,
+                nav_cache=nav_cache,
+                cache=cache,
+            )
+            if cached:
+                return cached
+        return pathfinding.astar(
+            self.map_data.collision_grid if self.map_data else [],
+            start,
+            goal,
+            settings.PASSABLE_VALUES,
+            cell_size=self.map_data.cell_size if self.map_data else 1,
+            actor_size=actor_size,
+            nav_cache=nav_cache,
+        )
+
     def _lab_set_cells(self, cells: list[tuple[int, int]], solid: bool) -> None:
         if not self.map_data:
             return
@@ -1532,10 +1809,6 @@ class Game:
                     row[cx] = 0
 
     def _lab_trigger_trap(self, trap_id: str) -> None:
-        if trap_id == "trap1":
-            # Keep second-layer layout stable; skip the old path collapse.
-            self.floor_flags["lab_trap1_resolved"] = True
-            return
         for trap in self.lab_traps:
             if trap.get("id") == trap_id:
                 if trap.get("state") == "void":
@@ -1618,9 +1891,26 @@ class Game:
             pygame.draw.rect(surf, (120, 220, 255, 220), surf.get_rect(), 3)
             self.screen.blit(surf, draw_rect.topleft)
 
+    def _draw_lab_npc(self) -> None:
+        rect = self._lab_npc_rect()
+        if not rect:
+            return
+        scale = self.map_scale
+        draw_rect = pygame.Rect(
+            int(rect.x * scale + self.map_offset[0]),
+            int(rect.y * scale + self.map_offset[1]),
+            int(rect.width * scale),
+            int(rect.height * scale),
+        )
+        if draw_rect.width <= 0 or draw_rect.height <= 0:
+            return
+        if self.lab_npc_sprite:
+            self.screen.blit(self.lab_npc_sprite, draw_rect.topleft)
+        else:
+            pygame.draw.rect(self.screen, (160, 120, 200), draw_rect, 2)
+
     def _draw_lab_environment(self) -> None:
-        self._draw_lab_traps()
-        self._draw_lab_barriers()
+        self._draw_lab_npc()
 
     def _draw_archive_elements(self) -> None:
         if self.archive_projectiles:
@@ -1793,7 +2083,6 @@ class Game:
         if npc_state.get("enemy_spawned"):
             return
         self.lab_branch = "fight"
-        self._unlock_achievement("sensory_choice")
         npc_state["state"] = "hostile"
         npc_state["enemy_spawned"] = True
         self._show_dialog(["指引者：抑制协议启动，小心它的冲撞。"], title="指引者")
@@ -1805,6 +2094,12 @@ class Game:
         if not self.map_data:
             return
         ex, ey = self._lab_units_to_display_pos(3.2, 3.2)
+        for trig in settings.INTERACT_ZONES.get("F40", []):
+            if trig.get("id") == "logic_error_entity":
+                x1, y1, x2, y2 = trig["rect"]
+                ex = ((x1 + x2) / 2) * self.map_scale
+                ey = ((y1 + y2) / 2) * self.map_scale
+                break
         enemy = {
             "x": ex,
             "y": ey,
@@ -1820,12 +2115,51 @@ class Game:
         }
         self.enemies.append(enemy)
 
+    def _lab_spawn_center_enemies(self) -> None:
+        if not self.map_data:
+            return
+        width, height = self.map_data.size_pixels
+        if not width or not height:
+            if self.map_surface:
+                w, h = self.map_surface.get_size()
+                width = w // max(1, self.map_scale)
+                height = h // max(1, self.map_scale)
+        if not width or not height:
+            return
+        center_x = width / 2.0
+        center_y = height / 2.0
+        for trig in settings.INTERACT_ZONES.get("F40", []):
+            if trig.get("id") == "lab_exit":
+                x1, y1, x2, y2 = trig["rect"]
+                center_x = (x1 + x2) / 2.0
+                center_y = (y1 + y2) / 2.0
+                break
+        offsets = [(-60, -30), (0, 40), (60, -20)]
+        for ox, oy in offsets:
+            px, py = self._snap_to_passable(center_x + ox, center_y + oy, max_steps=10)
+            self.enemies.append({
+                "x": float(px * self.map_scale),
+                "y": float(py * self.map_scale),
+                "hp": 55.0,
+                "max_hp": 55.0,
+                "state": "idle",
+                "fade_timer": settings.ENEMY_FADE_DURATION,
+                "flash_timer": 0.0,
+                "aggro": False,
+                "show_health": 0.0,
+                "attack_timer": random.uniform(0.4, settings.ENEMY_ATTACK_COOLDOWN),
+                "attack_anim_timer": 0.0,
+            })
+        if self.enemies:
+            self.combat_active = True
+
     def _lab_spawn_bypass_enemies(self) -> None:
         if not self.map_data:
             return
-        positions = [(9.5, 6.4), (11.2, 8.8)]
-        for ux, uy in positions:
-            ex, ey = self._lab_units_to_display_pos(ux, uy)
+        positions = [(100, 440), (840, 440)]
+        for px, py in positions:
+            ex = px * self.map_scale
+            ey = py * self.map_scale
             self.enemies.append({
                 "x": ex,
                 "y": ey,
@@ -1857,7 +2191,6 @@ class Game:
         if self.lab_branch == "fight":
             return
         self.lab_branch = "bypass"
-        self._unlock_achievement("sensory_choice")
         npc_state["state"] = "bypass"
         self.floor_flags["lab_branch_resolved"] = True
         self._unlock_achievement("lab_resolved")
@@ -1866,7 +2199,7 @@ class Game:
             if trap.get("id") in {"trap2", "trap3"}:
                 trap["active"] = True
                 trap["timer"] = max(0.5, trap.get("timer", 0.5))
-        barrier_cells = self._lab_cells_from_units(8, 4, 3, 2)
+        barrier_cells = self._lab_cells_from_rect(440, 80, 140, 40)
         self._lab_add_barrier(barrier_cells)
         self._set_quest_stage("lab_bypass")
 
@@ -1879,6 +2212,8 @@ class Game:
             self._update_floor_f30(dt)
         elif self.current_floor == "F25":
             self._update_floor_f25(dt)
+        elif self.current_floor == "F15":
+            self._update_floor_f15(dt)
         elif self.current_floor == "F10":
             self._update_floor_f10(dt)
 
@@ -1955,6 +2290,26 @@ class Game:
         speed_buff = float(getattr(self, "speed_bonus", state.get("speed_buff", 1.0)))
         slow_factor = float(state.get("slow_factor", 1.0)) if slow_timer > 0.0 else 1.0
         self.player_move_speed = settings.PLAYER_SPEED * speed_buff * slow_factor
+
+    def _update_floor_f15(self, dt: float) -> None:
+        if not self.map_data or not self.mirror_state:
+            return
+        state = self.mirror_state
+        if not state.get("intro_shown"):
+            timer = float(state.get("intro_timer", 0.0)) - dt
+            if timer <= 0.0:
+                state["intro_shown"] = True
+                self._show_dialog([
+                    "指引者：镜像空间。镜像将对称模仿你的行动。",
+                    "与镜像同步清理异常。"
+                ], title="指引者")
+                self._set_quest_stage("mirror_cleanup")
+            else:
+                state["intro_timer"] = timer
+        if state.get("boss_state") == "active":
+            self._mirror_update_boss(dt)
+        if state.get("boss_state") == "defeated":
+            self._mirror_update_shatter(dt)
 
     def _logic_bootstrap_servers(self) -> None:
         if not all(key in self.logic_flags for key in ("server_1", "server_2", "server_3")):
@@ -2055,6 +2410,7 @@ class Game:
             "F35": "Floor 35 - Memory Archive",
             "F30": "Floor 30 - Logic Core",
             "F25": "Floor 25 - Pathos Resonator",
+            "F15": "Floor 15 - Mirror Space",
             "F10": "Floor 10 - Sanctuary",
         }
         options: list[tuple[str, str]] = []
@@ -2543,46 +2899,16 @@ class Game:
         if not self.floor_flags.get("lab_intro_line"):
             timer = self.floor_timers.get("lab_intro_delay", 0.0) - dt
             if timer <= 0.0:
-                self._show_dialog(["指引者：感官实验室。环境数据高度不稳定，请保持警惕。"], title="指引者")
+                self._show_dialog(["指引者：感官实验室。扫描到异常信号，继续前进。"], title="指引者")
                 self.floor_flags["lab_intro_line"] = True
                 self.floor_timers.pop("lab_intro_delay", None)
             else:
                 self.floor_timers["lab_intro_delay"] = timer
-        px, py = self._player_map_pos()
-        if not self.floor_flags.get("lab_trap1_triggered") and py <= 210:
-            self.floor_flags["lab_trap1_triggered"] = True
-            self._lab_trigger_trap("trap1")
-            self._unlock_achievement("lab_first_trap")
-            self._set_quest_stage("lab_path")
-        self._lab_update_traps(dt)
-        npc_state = self.lab_npc_state.get("logic_error_entity")
-        if npc_state and npc_state.get("state") == "unstable" and not self.floor_flags.get("lab_branch_resolved"):
-            anchor = npc_state.get("anchor_pos")
-            if anchor:
-                if abs(px - anchor[0]) > 90 or py < anchor[1] - 45:
-                    self._lab_choose_bypass(npc_state)
-        if self.lab_branch == "bypass" and not self.floor_flags.get("lab_bypass_spawns") and py <= 150:
-            self._lab_spawn_bypass_enemies()
-            self.floor_flags["lab_bypass_spawns"] = True
-        if self.lab_branch == "bypass" and self.quest_stage == "lab_bypass" and px >= 250 and py <= 120:
-            self._set_quest_stage("lab_switch")
-        if self.lab_branch == "fight" and self.floor_flags.get("lab_branch_resolved") and self.quest_stage == "lab_choice":
-            self._set_quest_stage("lab_switch")
+        if self.floor_flags.get("lab_cleanup_ready") and not self.floor_flags.get("lab_cleanup_spawned"):
+            self._lab_spawn_center_enemies()
+            self.floor_flags["lab_cleanup_spawned"] = True
 
     def _handle_switch_interaction(self, trig: dict) -> None:
-        if self.current_floor == "F40":
-            if not self.floor_flags.get("lab_branch_resolved"):
-                self._show_dialog(["指引者：先稳住实验区，再尝试开关。"], title="指引者")
-                return
-            if self.floor_flags.get("lab_switch_activated"):
-                self._show_dialog(["系统：权限已解锁，电梯待命。"], title="系统")
-                return
-            self.floor_flags["lab_switch_activated"] = True
-            self._set_quest_stage("lab_exit")
-            self.elevator_locked = False
-            self._unlock_achievement("lab_unlock")
-            self._show_dialog(["系统：权限同步完成。电梯锁定解除。"], title="系统")
-            return
         if self.current_floor == "F30":
             self._handle_logic_switch(trig)
             return
@@ -2595,6 +2921,9 @@ class Game:
         if self.current_floor == "F25":
             self._handle_resonator_npc(trig)
             return
+        if self.current_floor == "F15":
+            self._handle_mirror_talk(trig)
+            return
         if self.current_floor == "F10":
             self._handle_sanctuary_aera(trig)
             return
@@ -2603,18 +2932,11 @@ class Game:
             return
         npc_id = trig.get("id", "npc")
         state = self.lab_npc_state.setdefault(npc_id, {"dialog_index": 0, "state": "neutral"})
-        current_state = state.get("state", "neutral")
-        if current_state == "hostile":
-            self._show_dialog(["它已经完全失控！"], title="指引者")
-            return
-        if current_state == "defeated":
+        if self.floor_flags.get("lab_exit_unlocked"):
             self._show_dialog(["残余的数据在缓慢蒸发。"], title="指引者")
             return
-        if current_state == "bypass":
+        if self.floor_flags.get("lab_cleanup_ready"):
             self._show_dialog(["逻辑错误实体：......"], title="逻辑错误实体")
-            return
-        if current_state == "unstable":
-            self._lab_choose_fight(state)
             return
         idx = state.get("dialog_index", 0)
         if idx == 0:
@@ -2626,35 +2948,26 @@ class Game:
         else:
             lines = [
                 "逻辑错误实体：The floor! It's breathing! Can't you feel it?!",
-                "指引者：发现逻辑错误实体，建议清除或寻找替代路径。",
+                "指引者：异常信号已汇聚，前往最中间清理怪物。",
             ]
             state["dialog_index"] = 2
-            state["state"] = "unstable"
-            anchor = trig.get("rect")
-            if anchor:
-                ax = (anchor[0] + anchor[2]) / 2 / self.map_scale
-                ay = (anchor[1] + anchor[3]) / 2 / self.map_scale
-                state["anchor_pos"] = (ax, ay)
-            else:
-                state["anchor_pos"] = self._player_map_pos()
-            self.lab_branch = ""
-            self._set_quest_stage("lab_choice")
+            state["state"] = "alerted"
+            if not self.floor_flags.get("lab_cleanup_ready"):
+                self.floor_flags["lab_cleanup_ready"] = True
+                self._set_quest_stage("lab_cleanup")
         self._show_dialog(lines, title="逻辑错误实体")
 
     def _lab_on_enemies_cleared(self) -> None:
-        if self.current_floor == "F35":
-            if not self.archive_boss:
-                self.combat_active = False
+        if self.floor_flags.get("lab_exit_unlocked"):
             return
-        npc_state = self.lab_npc_state.get("logic_error_entity")
-        if self.lab_branch == "fight" and npc_state and npc_state.get("state") == "hostile":
-            npc_state["state"] = "defeated"
-            self.floor_flags["lab_branch_resolved"] = True
-            self._unlock_achievement("lab_resolved")
-            self._set_quest_stage("lab_switch")
-            self._show_dialog(["指引者：异常数据已清除，前往终端完成授权。"], title="指引者")
-        else:
-            self._show_dialog(["指引者：干扰源消散，继续推进。"], title="指引者")
+        if not self.floor_flags.get("lab_cleanup_spawned"):
+            return
+        self.floor_flags["lab_exit_unlocked"] = True
+        self._set_quest_stage("lab_exit")
+        self.elevator_locked = False
+        self._unlock_achievement("lab_resolved")
+        self._unlock_achievement("lab_unlock")
+        self._show_dialog(["指引者：异常已清除，中枢电梯权限开放。"], title="指引者")
 
     def _handle_resonator_npc(self, trig: dict) -> None:
         if not self.resonator_state:
@@ -2696,6 +3009,8 @@ class Game:
     def _handle_sanctuary_aera(self, trig: dict) -> None:
         state = self.sanctuary_state
         if not state or state.get("aera_state") != "active":
+            return
+        if not state.get("aera_dialog_done"):
             return
         if state.get("battle_complete"):
             return
@@ -2876,6 +3191,137 @@ class Game:
         self.resonator_state["active_mood"] = None
         self._set_quest_stage("resonator_log")
         self._show_dialog(["共鸣器熄灭，情绪被缓缓吸收。", "中央日志已生成。"], title="系统")
+
+    def _draw_mirror_environment(self) -> None:
+        state = self.mirror_state
+        if not state:
+            return
+        axis_x = self._mirror_axis_x_scaled()
+        ox, oy = self.map_offset
+        axis_screen_x = int(axis_x + ox)
+        if self.map_surface:
+            map_height = self.map_surface.get_height()
+        elif self.map_data:
+            map_height = int(self.map_data.size_pixels[1] * max(1, self.map_scale))
+        else:
+            map_height = settings.WINDOW_HEIGHT
+        locked = state.get("axis_locked", False)
+        axis_color = (120, 200, 255) if locked else (70, 130, 200)
+        pygame.draw.line(self.screen, axis_color, (axis_screen_x, oy), (axis_screen_x, oy + map_height), width=2)
+        if locked:
+            lane_width = max(2, int(2 * self.map_scale))
+            overlay = pygame.Surface((lane_width, map_height), pygame.SRCALPHA)
+            overlay.fill((*axis_color, 60))
+            self.screen.blit(overlay, (axis_screen_x - lane_width // 2, oy))
+        boss_state = state.get("boss_state", "sync")
+        if boss_state == "sync":
+            self._draw_mirror_sync_avatar(ox, oy)
+        elif boss_state == "active":
+            self._draw_mirror_boss_avatar(ox, oy)
+            self._draw_mirror_boss_healthbar()
+        elif boss_state == "defeated":
+            self._draw_mirror_shatter_visuals(ox, oy)
+        drop = state.get("rifle_drop")
+        if drop and not state.get("rifle_claimed"):
+            dx = float(drop.get("x", 0.0)) + ox
+            dy = float(drop.get("y", 0.0)) + oy
+            sprite = self.mirror_assets.get("mirror_rifle")
+            if sprite:
+                rect = sprite.get_rect(center=(int(dx), int(dy)))
+                self.screen.blit(sprite, rect)
+            else:
+                size = int(18 * max(1, self.map_scale))
+                pygame.draw.rect(self.screen, (160, 210, 255), pygame.Rect(int(dx) - size // 2, int(dy) - size // 4, size, size // 2), border_radius=4)
+        if state.get("shatter_particles"):
+            self._draw_mirror_shatter_particles(ox, oy)
+
+    def _draw_mirror_sync_avatar(self, ox: int, oy: int) -> None:
+        mx, my = self._mirror_sync_pos_scaled()
+        sx = int(mx + ox)
+        sy = int(my + oy)
+        sprite = self.player_sprite or self._default_player_sprite()
+        if sprite:
+            mirrored = pygame.transform.flip(sprite, True, False)
+            tinted = mirrored.copy()
+            tint = pygame.Surface(tinted.get_size(), pygame.SRCALPHA)
+            tint.fill((140, 210, 255, 210))
+            tinted.blit(tint, (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
+            tinted.set_alpha(210)
+            rect = tinted.get_rect(center=(sx, sy))
+            self.screen.blit(tinted, rect)
+        else:
+            radius = max(12, int(10 * max(1, self.map_scale)))
+            pygame.draw.circle(self.screen, (150, 210, 255), (sx, sy), radius)
+        state = self.mirror_state or {}
+        if state.get("mirror_talk_ready"):
+            pulse = pygame.Surface((80, 80), pygame.SRCALPHA)
+            pygame.draw.circle(pulse, (120, 200, 255, 90), (40, 40), 36, width=3)
+            pygame.draw.circle(pulse, (120, 200, 255, 45), (40, 40), 28)
+            self.screen.blit(pulse, (sx - 40, sy - 40))
+
+    def _draw_mirror_boss_avatar(self, ox: int, oy: int) -> None:
+        # Placeholder; full boss rendering handled alongside boss logic
+        state = self.mirror_state or {}
+        bx = float(state.get("boss_x", 0.0)) + ox
+        by = float(state.get("boss_y", 0.0)) + oy
+        radius = max(16, int(12 * max(1, self.map_scale)))
+        flash = float(state.get("boss_flash", 0.0))
+        color = (255, 150, 170) if flash <= 0.0 else (255, 220, 240)
+        pygame.draw.circle(self.screen, color, (int(bx), int(by)), radius)
+
+    def _draw_mirror_boss_healthbar(self) -> None:
+        state = self.mirror_state
+        if not state:
+            return
+        hp = float(state.get("boss_hp", 0.0))
+        max_hp = max(1.0, float(state.get("boss_max_hp", 1.0)))
+        ratio = max(0.0, min(1.0, hp / max_hp))
+        width, height = 200, 12
+        x = (settings.WINDOW_WIDTH - width) // 2
+        y = 70
+        bg_rect = pygame.Rect(x, y, width, height)
+        pygame.draw.rect(self.screen, (26, 32, 44), bg_rect)
+        if ratio > 0.0:
+            fill_rect = bg_rect.copy()
+            fill_rect.width = int(width * ratio)
+            pygame.draw.rect(self.screen, (255, 140, 180), fill_rect)
+        pygame.draw.rect(self.screen, (200, 220, 235), bg_rect, 1)
+
+    def _draw_mirror_shatter_visuals(self, ox: int, oy: int) -> None:
+        shard = self.mirror_assets.get("mirror_shard")
+        state = self.mirror_state or {}
+        pos = state.get("shatter_anchor") or self._mirror_sync_pos_scaled()
+        sx = int(pos[0] + ox)
+        sy = int(pos[1] + oy)
+        if shard:
+            rect = shard.get_rect(center=(sx, sy))
+            self.screen.blit(shard, rect)
+        else:
+            size = max(20, int(16 * max(1, self.map_scale)))
+            pygame.draw.polygon(
+                self.screen,
+                (180, 220, 255),
+                [
+                    (sx, sy - size // 2),
+                    (sx + size // 2, sy),
+                    (sx, sy + size // 2),
+                    (sx - size // 2, sy),
+                ],
+                width=2,
+            )
+
+    def _draw_mirror_shatter_particles(self, ox: int, oy: int) -> None:
+        state = self.mirror_state or {}
+        particles = state.get("shatter_particles", [])
+        for part in particles:
+            px = float(part.get("x", 0.0)) + ox
+            py = float(part.get("y", 0.0)) + oy
+            alpha = int(max(0.0, min(1.0, part.get("life", 0.0) / max(0.001, part.get("max_life", 1.0)))) * 255)
+            size = int(part.get("size", 3))
+            surf = pygame.Surface((size, size), pygame.SRCALPHA)
+            color = part.get("color", (150, 210, 255))
+            surf.fill((*color, alpha))
+            self.screen.blit(surf, (int(px) - size // 2, int(py) - size // 2))
 
     def _draw_resonator_environment(self) -> None:
         self._draw_resonator_boss()
@@ -3069,6 +3515,8 @@ class Game:
             self._draw_logic_environment()
         elif self.current_floor == "F25":
             self._draw_resonator_environment()
+        elif self.current_floor == "F15":
+            self._draw_mirror_environment()
         elif self.current_floor == "F10":
             self._draw_sanctuary_environment()
         self._draw_enemy_attack_fx()
@@ -3117,6 +3565,567 @@ class Game:
             w, h = sprite.get_size()
             sprite = pygame.transform.scale(sprite, (int(w * self.map_scale), int(h * self.map_scale)))
         return sprite
+
+    def _mirror_load_assets(self) -> None:
+        if self.mirror_assets:
+            return
+        asset_map = {
+            "mirror_shard": "mirror_shard.png",
+            "mirror_rifle": "rifle_pickup.png",
+        }
+        for key, filename in asset_map.items():
+            path = settings.IMAGES_DIR / filename
+            if not path.exists():
+                continue
+            try:
+                sprite = pygame.image.load(str(path)).convert_alpha()
+            except Exception:
+                continue
+            if self.map_scale != 1:
+                w, h = sprite.get_size()
+                sprite = pygame.transform.scale(sprite, (int(w * self.map_scale), int(h * self.map_scale)))
+            sprite = self._apply_transparent_background(sprite)
+            self.mirror_assets[key] = sprite
+
+    def _mirror_axis_x_scaled(self) -> float:
+        state = self.mirror_state or {}
+        axis_x = float(state.get("axis_x", 0.0))
+        return axis_x * max(1, self.map_scale)
+
+    def _mirror_sync_pos(self) -> tuple[float, float]:
+        if not self.map_data:
+            return (self.player_rect.centerx / max(1, self.map_scale), self.player_rect.centery / max(1, self.map_scale))
+        state = self.mirror_state or {}
+        axis_x = float(state.get("axis_x", self.map_data.size_pixels[0] / 2.0))
+        px = self.player_rect.centerx / max(1, self.map_scale)
+        py = self.player_rect.centery / max(1, self.map_scale)
+        mirror_x = axis_x + (axis_x - px)
+        max_w = float(self.map_data.size_pixels[0])
+        max_h = float(self.map_data.size_pixels[1])
+        if max_w > 0:
+            mirror_x = max(0.0, min(max_w - 1.0, mirror_x))
+        if max_h > 0:
+            py = max(0.0, min(max_h - 1.0, py))
+        return (mirror_x, py)
+
+    def _mirror_sync_pos_scaled(self) -> tuple[float, float]:
+        mx, my = self._mirror_sync_pos()
+        scale = max(1, self.map_scale)
+        return (mx * scale, my * scale)
+
+    def _mirror_axis_cell(self, cell_x: int) -> bool:
+        state = self.mirror_state or {}
+        axis_col = state.get("axis_col")
+        if axis_col is None:
+            return False
+        return int(axis_col) == int(cell_x)
+
+    def _mirror_apply_axis_lock(self, locked: bool) -> None:
+        if not self.map_data or not self.mirror_state:
+            return
+        axis_col = self.mirror_state.get("axis_col")
+        if axis_col is None:
+            return
+        grid = self.map_data.collision_grid
+        base = self._base_collision_grid
+        col_index = int(axis_col)
+        for y, row in enumerate(grid):
+            if col_index < 0 or col_index >= len(row):
+                continue
+            if locked:
+                row[col_index] = 1
+            else:
+                if base and y < len(base) and col_index < len(base[y]):
+                    row[col_index] = base[y][col_index]
+                else:
+                    row[col_index] = 0
+        self.mirror_state["axis_locked"] = bool(locked)
+        if self.current_floor == "F15":
+            self.nav_cache_player = pathfinding.build_nav_cache(
+                grid,
+                settings.PASSABLE_VALUES,
+                cell_size=self.map_data.cell_size,
+                actor_size=settings.PLAYER_SIZE,
+            )
+            enemy_size = (settings.ENEMY_RADIUS * 2, settings.ENEMY_RADIUS * 2)
+            self.nav_cache_enemy = pathfinding.build_nav_cache(
+                grid,
+                settings.PASSABLE_VALUES,
+                cell_size=self.map_data.cell_size,
+                actor_size=enemy_size,
+            )
+
+    def _mirror_spawn_enemies(self) -> None:
+        if not self.map_data or not self.mirror_state:
+            return
+        if self.mirror_state.get("cleanup_done"):
+            self.enemies = []
+            return
+        axis_x = float(self.mirror_state.get("axis_x", self.map_data.size_pixels[0] / 2.0))
+        base_points = [
+            (212.0, 268.0),
+            (212.0, 760.0),
+        ]
+        spawn_positions: list[tuple[float, float, str]] = []
+        for bx, by in base_points:
+            lx, ly = self._snap_to_passable(bx, by, max_steps=18)
+            spawn_positions.append((lx, ly, "left"))
+            mirror_x = axis_x + (axis_x - lx)
+            rx, ry = self._snap_to_passable(mirror_x, ly, max_steps=18)
+            spawn_positions.append((rx, ry, "right"))
+        enemies: list[dict] = []
+        scale = max(1, self.map_scale)
+        for sx, sy, side in spawn_positions:
+            px = float(sx * scale)
+            py = float(sy * scale)
+            color = (255, 150, 170) if side == "left" else (150, 210, 255)
+            enemy = {
+                "x": px,
+                "y": py,
+                "hp": float(settings.ENEMY_MAX_HEALTH),
+                "max_hp": float(settings.ENEMY_MAX_HEALTH),
+                "state": "idle",
+                "fade_timer": settings.ENEMY_FADE_DURATION,
+                "flash_timer": 0.0,
+                "aggro": False,
+                "show_health": 0.0,
+                "attack_timer": random.uniform(0.3, settings.ENEMY_ATTACK_COOLDOWN),
+                "attack_anim_timer": 0.0,
+                "aggro_radius": 420 * scale,
+                "lose_radius": 540 * scale,
+                "move_speed": settings.ENEMY_MOVE_SPEED * 0.95,
+                "color": color,
+            }
+            enemies.append(enemy)
+        self.enemies = enemies
+        self.combat_active = bool(enemies)
+
+    def _mirror_start_boss(self) -> None:
+        state = self.mirror_state
+        if not state or state.get("boss_state") == "active" or state.get("boss_state") == "defeated":
+            return
+        state["boss_state"] = "active"
+        mx, my = self._mirror_sync_pos_scaled()
+        state["boss_x"] = float(mx)
+        state["boss_y"] = float(my)
+        state["boss_hp"] = float(state.get("boss_max_hp", state.get("boss_hp", 0.0)))
+        state["boss_flash"] = 0.0
+        state["boss_fire_timer"] = 0.3
+        state["boss_reload_timer"] = 0.0
+        state["boss_ammo"] = self._weapon_clip_size("entropy_rifle")
+        state["boss_strategy"] = "chase"
+        state["boss_pending"] = None
+        state["boss_decision_timer"] = 0.0
+        state["boss_last_can_shoot"] = None
+        state["boss_path"] = []
+        state["boss_path_goal"] = None
+        state["boss_path_timer"] = 0.0
+        state["shatter_particles"] = []
+        state["shatter_anchor"] = (float(mx), float(my))
+        state.setdefault("exit_unlocked", True)
+        state.setdefault("rifle_claimed", False)
+        self.combat_active = True
+        self._set_quest_stage("mirror_boss")
+        self._show_dialog(["镜像：为什么……要打我？"], title="镜像")
+
+    def _mirror_boss_can_shoot(self, state: dict) -> bool:
+        if not self.map_data or self.player_dead:
+            return False
+        bx = float(state.get("boss_x", 0.0))
+        by = float(state.get("boss_y", 0.0))
+        px = float(self.player_rect.centerx)
+        py = float(self.player_rect.centery)
+        dx = px - bx
+        dy = py - by
+        dist = math.hypot(dx, dy)
+        if dist <= 80.0 or dist > 780.0:
+            return False
+        cell_px = max(1, self.map_data.cell_size * self.map_scale)
+        steps = int(dist / max(1, cell_px // 2))
+        if steps <= 0:
+            return True
+        grid = self.map_data.collision_grid
+        max_y = len(grid)
+        max_x = len(grid[0]) if max_y else 0
+        for step in range(1, steps):
+            t = step / steps
+            sample_x = bx + dx * t
+            sample_y = by + dy * t
+            cx = int(sample_x // cell_px)
+            cy = int(sample_y // cell_px)
+            if cx < 0 or cy < 0 or cy >= max_y or cx >= max_x:
+                return False
+            if grid[cy][cx] != 0:
+                return False
+        return True
+
+    def _mirror_boss_chase(self, state: dict, dt: float) -> None:
+        if not self.map_data:
+            return
+        move_speed = settings.PLAYER_SPEED * 0.95
+        cell_px = max(1, self.map_data.cell_size * self.map_scale)
+        grid_w, grid_h = self.map_data.grid_size
+        bx = float(state.get("boss_x", 0.0))
+        by = float(state.get("boss_y", 0.0))
+        start_cell = (
+            max(0, min(grid_w - 1, int(bx // cell_px))),
+            max(0, min(grid_h - 1, int(by // cell_px))),
+        )
+        target_cell = (
+            max(0, min(grid_w - 1, int(self.player_rect.centerx // cell_px))),
+            max(0, min(grid_h - 1, int(self.player_rect.centery // cell_px))),
+        )
+        path_timer = float(state.get("boss_path_timer", 0.0)) - dt
+        if path_timer <= 0.0 or not state.get("boss_path") or state.get("boss_path_goal") != target_cell:
+            enemy_size = settings.PLAYER_SIZE
+            path_nodes = self._lab_astar(
+                start_cell,
+                target_cell,
+                actor_size=enemy_size,
+                nav_cache=self.nav_cache_enemy,
+                cache=self.lab_path_cache_enemy,
+            )
+            state["boss_path"] = path_nodes[1:] if len(path_nodes) > 1 else []
+            state["boss_path_goal"] = target_cell
+            state["boss_path_timer"] = random.uniform(0.35, 0.6)
+        else:
+            state["boss_path_timer"] = path_timer
+        path = state.get("boss_path", [])
+        if not path:
+            return
+        next_node = path[0]
+        target_x = (next_node[0] + 0.5) * cell_px
+        target_y = (next_node[1] + 0.5) * cell_px
+        dx = target_x - bx
+        dy = target_y - by
+        dist = math.hypot(dx, dy)
+        if dist <= 1.0:
+            state["boss_x"] = float(target_x)
+            state["boss_y"] = float(target_y)
+            path.pop(0)
+            state["boss_path"] = path
+            return
+        step = move_speed * dt
+        if step <= 0.0:
+            return
+        move_x = int(round(dx / dist * step))
+        move_y = int(round(dy / dist * step))
+        if move_x == 0 and move_y == 0:
+            return
+        rect = pygame.Rect(0, 0, settings.PLAYER_SIZE[0], settings.PLAYER_SIZE[1])
+        rect.center = (int(bx), int(by))
+        moved = collision.move_with_collision(
+            rect,
+            (move_x, move_y),
+            self.map_data.collision_grid,
+            cell_size=cell_px,
+            substep=settings.COLLISION_SUBSTEP,
+        )
+        state["boss_x"] = float(moved.centerx)
+        state["boss_y"] = float(moved.centery)
+
+    def _mirror_spawn_boss_bullet(self, state: dict) -> None:
+        config = self._weapon_config("entropy_rifle")
+        speed = float(config.get("bullet_speed", settings.GUN_BULLET_SPEED))
+        radius = int(config.get("bullet_radius", settings.GUN_BULLET_RADIUS))
+        ttl = float(config.get("bullet_lifetime", settings.GUN_BULLET_LIFETIME))
+        damage = float(config.get("damage", settings.PLAYER_BULLET_DAMAGE))
+        bx = float(state.get("boss_x", 0.0))
+        by = float(state.get("boss_y", 0.0))
+        px = float(self.player_rect.centerx)
+        py = float(self.player_rect.centery)
+        dx = px - bx
+        dy = py - by
+        dist = math.hypot(dx, dy)
+        if dist <= 0.0:
+            return
+        vx = dx / dist * speed
+        vy = dy / dist * speed
+        self.bullets.append({
+            "x": bx,
+            "y": by,
+            "vx": vx,
+            "vy": vy,
+            "ttl": ttl,
+            "radius": radius,
+            "color": (255, 150, 150),
+            "damage": damage,
+            "owner": "mirror_boss",
+        })
+
+    def _mirror_finish_boss(self) -> None:
+        state = self.mirror_state
+        if not state or state.get("boss_state") == "defeated":
+            return
+        state["boss_state"] = "defeated"
+        state["boss_path"] = []
+        state["boss_pending"] = None
+        state["boss_decision_timer"] = 0.0
+        state["boss_last_can_shoot"] = None
+        state["boss_flash"] = 0.0
+        anchor = (float(state.get("boss_x", 0.0)), float(state.get("boss_y", 0.0)))
+        state["shatter_anchor"] = anchor
+        particles: list[dict] = []
+        for _ in range(28):
+            angle = random.uniform(0.0, math.tau)
+            speed = random.uniform(80.0, 170.0)
+            life = random.uniform(0.6, 1.3)
+            particles.append({
+                "x": anchor[0],
+                "y": anchor[1],
+                "vx": math.cos(angle) * speed,
+                "vy": math.sin(angle) * speed,
+                "life": life,
+                "max_life": life,
+                "size": random.randint(2, 4),
+                "color": (150, 210, 255),
+            })
+        state["shatter_particles"] = particles
+        state["rifle_drop"] = {
+            "x": anchor[0],
+            "y": anchor[1] + 20 * max(1, self.map_scale),
+            "radius": int(28 * max(1, self.map_scale)),
+        }
+        state["exit_unlocked"] = True
+        self.elevator_locked = False
+        self.combat_active = False
+        self.story_flags["mirror_boss_defeated"] = True
+        self._set_quest_stage("mirror_exit")
+        self._show_dialog([
+            "镜像破碎成无数碎片，残留的意识随风散尽。",
+            "一把步枪滑落在碎片中央。",
+        ], title="系统")
+
+    def _mirror_update_boss(self, dt: float) -> None:
+        state = self.mirror_state
+        if not state or state.get("boss_state") != "active":
+            return
+        state["boss_flash"] = max(0.0, float(state.get("boss_flash", 0.0)) - dt)
+        state["boss_fire_timer"] = max(0.0, float(state.get("boss_fire_timer", 0.0)) - dt)
+        reload_timer = float(state.get("boss_reload_timer", 0.0))
+        if reload_timer > 0.0:
+            reload_timer = max(0.0, reload_timer - dt)
+            state["boss_reload_timer"] = reload_timer
+            if reload_timer == 0.0:
+                state["boss_ammo"] = self._weapon_clip_size("entropy_rifle")
+        can_shoot = self._mirror_boss_can_shoot(state)
+        current = state.get("boss_strategy", "chase")
+        desired = "shoot" if can_shoot else "chase"
+        timer = max(0.0, float(state.get("boss_decision_timer", 0.0)) - dt)
+        state["boss_decision_timer"] = timer
+        pending = state.get("boss_pending")
+        if desired != current:
+            if pending and pending != desired and timer > 0.0:
+                state["boss_pending"] = desired
+                state["boss_decision_timer"] = 0.0
+            elif timer <= 0.0:
+                state["boss_strategy"] = desired
+                state["boss_pending"] = None
+                state["boss_decision_timer"] = 0.5
+            else:
+                state["boss_pending"] = desired
+        elif pending and pending == desired and timer <= 0.0:
+            state["boss_strategy"] = desired
+            state["boss_pending"] = None
+            state["boss_decision_timer"] = 0.5
+        if state.get("boss_strategy") == "chase":
+            self._mirror_boss_chase(state, dt)
+            state["boss_path_timer"] = max(0.0, float(state.get("boss_path_timer", 0.0)))
+        else:
+            state["boss_path"] = []
+            state["boss_path_goal"] = None
+            state["boss_path_timer"] = 0.0
+            if state.get("boss_ammo", 0) <= 0 and state.get("boss_reload_timer", 0.0) == 0.0:
+                state["boss_reload_timer"] = float(state.get("boss_reload_time", 3.0))
+            if state.get("boss_reload_timer", 0.0) == 0.0 and state.get("boss_ammo", 0) > 0 and state["boss_fire_timer"] <= 0.0:
+                if self._mirror_boss_can_shoot(state):
+                    self._mirror_spawn_boss_bullet(state)
+                    state["boss_ammo"] = int(state.get("boss_ammo", 1)) - 1
+                    fire_cd = float(self._weapon_config("entropy_rifle").get("fire_cooldown", settings.GUN_FIRE_COOLDOWN))
+                    state["boss_fire_timer"] = fire_cd
+                    if state["boss_ammo"] <= 0:
+                        state["boss_reload_timer"] = float(state.get("boss_reload_time", 3.0))
+                        state["boss_fire_timer"] = 0.3
+        if float(state.get("boss_hp", 0.0)) <= 0.0:
+            self._mirror_finish_boss()
+
+    def _mirror_update_shatter(self, dt: float) -> None:
+        state = self.mirror_state
+        if not state or not state.get("shatter_particles"):
+            return
+        particles = []
+        for part in state.get("shatter_particles", []):
+            life = float(part.get("life", 0.0)) - dt
+            if life <= 0.0:
+                continue
+            part["life"] = life
+            part["x"] = float(part.get("x", 0.0)) + part.get("vx", 0.0) * dt
+            part["y"] = float(part.get("y", 0.0)) + part.get("vy", 0.0) * dt
+            particles.append(part)
+        state["shatter_particles"] = particles
+
+    def _mirror_handle_rifle_pickup(self) -> None:
+        state = self.mirror_state
+        if not state or state.get("rifle_claimed"):
+            return
+        if not state.get("rifle_drop"):
+            return
+        state["rifle_claimed"] = True
+        state["rifle_drop"] = None
+        self._unlock_weapon("entropy_rifle")
+        self._prime_weapon_ammo(reset_all=False)
+        self._show_dialog([
+            "获得武器：熵步枪。",
+            "提示：按数字键 3 切换，长按左键可持续射击。",
+        ], title="系统")
+
+    def _mirror_dynamic_interaction(self, px: int, py: int) -> dict | None:
+        if not self.mirror_state:
+            return None
+        state = self.mirror_state
+        if state.get("boss_state") == "sync" and state.get("mirror_talk_ready"):
+            mx, my = self._mirror_sync_pos_scaled()
+            half_w = int(26 * max(1, self.map_scale))
+            half_h = int(34 * max(1, self.map_scale))
+            rect = (
+                int(mx - half_w),
+                int(my - half_h),
+                int(mx + half_w),
+                int(my + half_h),
+            )
+            return {"id": "mirror", "type": "npc", "rect": rect}
+        drop = state.get("rifle_drop")
+        if drop and not state.get("rifle_claimed"):
+            dx = float(drop.get("x", 0.0))
+            dy = float(drop.get("y", 0.0))
+            radius = int(drop.get("radius", 24))
+            rect = (
+                int(dx - radius),
+                int(dy - radius),
+                int(dx + radius),
+                int(dy + radius),
+            )
+            return {"id": "mirror_rifle", "type": "pickup", "rect": rect}
+        return None
+
+    def _handle_mirror_talk(self, trig: dict) -> None:
+        state = self.mirror_state
+        if not state or trig.get("id") != "mirror":
+            self._show_dialog(["镜像没有回应。"], title="提示")
+            return
+        if state.get("boss_state") != "sync":
+            if state.get("boss_state") == "active":
+                self._show_dialog(["镜像正举枪瞄准你，已无法沟通。"], title="提示")
+            elif state.get("boss_state") == "defeated":
+                self._show_dialog(["碎裂的镜面静静躺在地上。"], title="提示")
+            else:
+                self._show_dialog(["镜像保持沉默。"], title="提示")
+            return
+        if not state.get("mirror_talk_ready"):
+            if state.get("mirror_talked"):
+                self._show_dialog(["镜像：使命已经交付。前往右侧电梯。"], title="镜像")
+            else:
+                self._show_dialog(["镜像的轮廓在等待异常被清理。"], title="提示")
+            return
+        state["mirror_talk_ready"] = False
+        if not state.get("mirror_talked"):
+            state["mirror_talked"] = True
+            state["exit_unlocked"] = True
+            self.elevator_locked = False
+            self.story_flags["cognitive_solvent"] = True
+            self._set_quest_stage("mirror_exit")
+            lines = [
+                "镜像：我们共享同一脉冲。你的每一步，我都在另一侧完成。",
+                "镜像：把这瓶认知溶解剂带走，它能瓦解他们的伪装。",
+                "指引者：关键物品已收录，右侧电梯权限开放。",
+            ]
+            self._show_dialog(lines, title="镜像")
+        else:
+            self._show_dialog(["镜像：别犹豫，避难所需要你。"], title="镜像")
+
+    def _mirror_on_enemies_cleared(self) -> None:
+        state = self.mirror_state
+        if not state:
+            return
+        if state.get("cleanup_done"):
+            return
+        state["cleanup_done"] = True
+        state["mirror_talk_ready"] = True
+        self.combat_active = False
+        self._mirror_apply_axis_lock(False)
+        self._set_quest_stage("mirror_talk")
+        self._show_dialog([
+            "指引者：异常已肃清。与镜像在中轴线对话，确认收束协议。",
+        ], title="指引者")
+
+    def _mirror_bullet_crossed_axis(self, bullet: dict) -> bool:
+        axis_x = self._mirror_axis_x_scaled()
+        side = int(bullet.get("axis_side", 0))
+        x = float(bullet.get("x", 0.0))
+        if side > 0:
+            return x <= axis_x
+        if side < 0:
+            return x >= axis_x
+        return False
+
+    def _mirror_bullet_hits_sync(self, bullet: dict) -> bool:
+        state = self.mirror_state
+        if not state or state.get("boss_state") != "sync":
+            return False
+        if not state.get("mirror_talked"):
+            return False
+        mx, my = self._mirror_sync_pos_scaled()
+        dx = float(bullet.get("x", 0.0)) - mx
+        dy = float(bullet.get("y", 0.0)) - my
+        radius = 18 * max(1, self.map_scale)
+        bullet_radius = float(bullet.get("radius", settings.GUN_BULLET_RADIUS))
+        if dx * dx + dy * dy > (radius + bullet_radius) ** 2:
+            return False
+        self._mirror_start_boss()
+        return True
+
+    def _mirror_bullet_hits_boss(self, bullet: dict) -> bool:
+        state = self.mirror_state
+        if not state or state.get("boss_state") != "active":
+            return False
+        bx = float(state.get("boss_x", 0.0))
+        by = float(state.get("boss_y", 0.0))
+        dx = float(bullet.get("x", 0.0)) - bx
+        dy = float(bullet.get("y", 0.0)) - by
+        radius = 20 * max(1, self.map_scale)
+        bullet_radius = float(bullet.get("radius", settings.GUN_BULLET_RADIUS))
+        if dx * dx + dy * dy > (radius + bullet_radius) ** 2:
+            return False
+        damage = float(bullet.get("damage", settings.PLAYER_BULLET_DAMAGE))
+        state["boss_hp"] = max(0.0, float(state.get("boss_hp", 0.0)) - damage)
+        state["boss_flash"] = 0.12
+        if float(state["boss_hp"]) <= 0.0:
+            self._mirror_finish_boss()
+        return True
+
+    def _mirror_post_load(self) -> None:
+        state = self.mirror_state
+        if not state:
+            return
+        self._mirror_apply_axis_lock(bool(state.get("axis_locked", False)))
+        if state.get("cleanup_done"):
+            self.enemies = []
+            self.combat_active = False
+        if state.get("exit_unlocked"):
+            self.elevator_locked = False
+        else:
+            self.elevator_locked = True
+        boss_state = state.get("boss_state")
+        if boss_state == "sync":
+            if state.get("mirror_talk_ready"):
+                self.combat_active = False
+        elif boss_state == "active":
+            self.combat_active = True
+            state.setdefault("boss_path", [])
+            state.setdefault("shatter_particles", [])
+        elif boss_state == "defeated":
+            self.combat_active = False
+            state.setdefault("shatter_particles", [])
 
     def _load_archive_boss_sprite(self) -> pygame.Surface | None:
         path = getattr(settings, "ARCHIVE_BOSS_IMAGE", None)
@@ -3340,13 +4349,12 @@ class Game:
         start = (self.player_rect.centerx // cell, self.player_rect.centery // cell)
         goal = (int(map_x) // cell, int(map_y) // cell)
         self._start_click_feedback(map_x, map_y)
-        path_nodes = pathfinding.astar(
-            self.map_data.collision_grid,
+        path_nodes = self._lab_astar(
             start,
             goal,
-            settings.PASSABLE_VALUES,
-            cell_size=self.map_data.cell_size,
             actor_size=settings.PLAYER_SIZE,
+            nav_cache=self.nav_cache_player,
+            cache=self.lab_path_cache_player,
         )
         if len(path_nodes) <= 1:
             nearest = pathfinding.nearest_reachable(
@@ -3357,15 +4365,15 @@ class Game:
                 cell_size=self.map_data.cell_size,
                 actor_size=settings.PLAYER_SIZE,
                 max_distance_px=10,
+                nav_cache=self.nav_cache_player,
             )
             if nearest and nearest != start:
-                path_nodes = pathfinding.astar(
-                    self.map_data.collision_grid,
+                path_nodes = self._lab_astar(
                     start,
                     nearest,
-                    settings.PASSABLE_VALUES,
-                    cell_size=self.map_data.cell_size,
                     actor_size=settings.PLAYER_SIZE,
+                    nav_cache=self.nav_cache_player,
+                    cache=self.lab_path_cache_player,
                 )
                 if len(path_nodes) > 1:
                     goal = nearest
@@ -3524,6 +4532,9 @@ class Game:
         radius = int(weapon_cfg.get("bullet_radius", settings.GUN_BULLET_RADIUS))
         color = weapon_cfg.get("bullet_color", settings.GUN_BULLET_COLOR)
         damage = float(weapon_cfg.get("damage", settings.PLAYER_BULLET_DAMAGE))
+        mirror_state = self.mirror_state if self.current_floor == "F15" else None
+        mirror_sync = bool(mirror_state) and mirror_state.get("boss_state") == "sync"
+        mirror_pos = self._mirror_sync_pos_scaled() if mirror_sync else None
         for _ in range(pellets):
             angle = base_angle + random.uniform(-spread_rad, spread_rad)
             vx = math.cos(angle) * speed
@@ -3537,7 +4548,22 @@ class Game:
                 "radius": radius,
                 "color": color,
                 "damage": damage,
+                "owner": "player",
             })
+            if mirror_sync and mirror_pos:
+                mx, my = mirror_pos
+                self.bullets.append({
+                    "x": float(mx),
+                    "y": float(my),
+                    "vx": -vx,
+                    "vy": vy,
+                    "ttl": ttl,
+                    "radius": radius,
+                    "color": (150, 210, 255),
+                    "damage": damage,
+                    "owner": "mirror",
+                    "axis_side": 1 if mx >= self._mirror_axis_x_scaled() else -1,
+                })
         self.ammo_in_clip -= 1
         self.weapon_ammo[self.current_weapon] = self.ammo_in_clip
         self.fire_cooldown = float(weapon_cfg.get("fire_cooldown", settings.GUN_FIRE_COOLDOWN))
@@ -3565,37 +4591,50 @@ class Game:
                 continue
             b["x"] += b["vx"] * dt
             b["y"] += b["vy"] * dt
-            # enemy hit check
-            hit_enemy = None
-            bullet_radius = float(b.get("radius", settings.GUN_BULLET_RADIUS))
-            hit_radius_sq = (settings.ENEMY_RADIUS + bullet_radius) ** 2
-            for enemy in self.enemies:
-                if enemy.get("state") == "dying":
+            owner = b.get("owner", "player")
+            if self.current_floor == "F15":
+                if owner == "mirror" and self._mirror_bullet_crossed_axis(b):
                     continue
-                dx = enemy["x"] - b["x"]
-                dy = enemy["y"] - b["y"]
-                if dx * dx + dy * dy <= hit_radius_sq:
-                    hit_enemy = enemy
-                    break
-            if hit_enemy:
-                max_hp = float(hit_enemy.get("max_hp", settings.ENEMY_MAX_HEALTH))
-                current_hp = float(hit_enemy.get("hp", max_hp))
-                damage = float(b.get("damage", settings.PLAYER_BULLET_DAMAGE))
-                current_hp = max(0.0, current_hp - damage)
-                hit_enemy["hp"] = current_hp
-                hit_enemy["max_hp"] = max_hp
-                hit_enemy["flash_timer"] = settings.ENEMY_HIT_FLASH_TIME
-                hit_enemy["show_health"] = settings.ENEMY_HEALTH_BAR_VIS_DURATION
-                hit_enemy["aggro"] = True
-                if hit_enemy.get("state") == "idle":
-                    hit_enemy["state"] = "aggro"
-                if current_hp <= 0.0 and hit_enemy.get("state") != "dying":
-                    hit_enemy["state"] = "dying"
-                    hit_enemy["fade_timer"] = settings.ENEMY_FADE_DURATION
-                    hit_enemy["attack_anim_timer"] = 0.0
-                continue  # bullet consumed on hit
+                if owner == "mirror_boss":
+                    dx_p = b["x"] - self.player_rect.centerx
+                    dy_p = b["y"] - self.player_rect.centery
+                    bullet_radius = float(b.get("radius", settings.GUN_BULLET_RADIUS))
+                    hit_radius = bullet_radius + max(settings.PLAYER_SIZE) * 0.5
+                    if dx_p * dx_p + dy_p * dy_p <= hit_radius * hit_radius:
+                        self._apply_player_damage(float(b.get("damage", settings.PLAYER_BULLET_DAMAGE)))
+                        continue
+            # enemy hit check
+            if owner in {"player", "mirror"}:
+                hit_enemy = None
+                bullet_radius = float(b.get("radius", settings.GUN_BULLET_RADIUS))
+                hit_radius_sq = (settings.ENEMY_RADIUS + bullet_radius) ** 2
+                for enemy in self.enemies:
+                    if enemy.get("state") == "dying":
+                        continue
+                    dx = enemy["x"] - b["x"]
+                    dy = enemy["y"] - b["y"]
+                    if dx * dx + dy * dy <= hit_radius_sq:
+                        hit_enemy = enemy
+                        break
+                if hit_enemy:
+                    max_hp = float(hit_enemy.get("max_hp", settings.ENEMY_MAX_HEALTH))
+                    current_hp = float(hit_enemy.get("hp", max_hp))
+                    damage = float(b.get("damage", settings.PLAYER_BULLET_DAMAGE))
+                    current_hp = max(0.0, current_hp - damage)
+                    hit_enemy["hp"] = current_hp
+                    hit_enemy["max_hp"] = max_hp
+                    hit_enemy["flash_timer"] = settings.ENEMY_HIT_FLASH_TIME
+                    hit_enemy["show_health"] = settings.ENEMY_HEALTH_BAR_VIS_DURATION
+                    hit_enemy["aggro"] = True
+                    if hit_enemy.get("state") == "idle":
+                        hit_enemy["state"] = "aggro"
+                    if current_hp <= 0.0 and hit_enemy.get("state") != "dying":
+                        hit_enemy["state"] = "dying"
+                        hit_enemy["fade_timer"] = settings.ENEMY_FADE_DURATION
+                        hit_enemy["attack_anim_timer"] = 0.0
+                    continue  # bullet consumed on hit
 
-            if self.archive_boss and self.archive_boss.get("state") != "dying":
+            if owner == "player" and self.archive_boss and self.archive_boss.get("state") != "dying":
                 dx_b = self.archive_boss.get("x", 0.0) - b["x"]
                 dy_b = self.archive_boss.get("y", 0.0) - b["y"]
                 radius = self.archive_boss.get("hit_radius", 78.0) + bullet_radius
@@ -3606,7 +4645,7 @@ class Game:
                     self.archive_boss["flash"] = 0.12
                     continue
 
-            if self.current_floor == "F25" and self.resonator_state and self.resonator_state.get("boss_state") != "defeated":
+            if owner == "player" and self.current_floor == "F25" and self.resonator_state and self.resonator_state.get("boss_state") != "defeated":
                 center = self.resonator_state.get("center", (0.0, 0.0))
                 cx = center[0] * self.map_scale
                 cy = center[1] * self.map_scale
@@ -3626,12 +4665,20 @@ class Game:
                     self.resonator_state["boss_hp"] = hp
                     self.resonator_state["boss_flash"] = 0.12
                     continue
+            if owner == "player" and self.current_floor == "F15":
+                if self._mirror_bullet_hits_sync(b):
+                    continue
+                if self._mirror_bullet_hits_boss(b):
+                    continue
 
             cx = int(b["x"] // cell_px)
             cy = int(b["y"] // cell_px)
             if cx < 0 or cy < 0 or cx >= max_x or cy >= max_y:
                 continue
             if self.map_data.collision_grid[cy][cx] == 1:
+                if owner == "player" and self.current_floor == "F15" and self._mirror_axis_cell(cx):
+                    next_bullets.append(b)
+                    continue
                 continue
             next_bullets.append(b)
         self.bullets = next_bullets
@@ -3698,10 +4745,28 @@ class Game:
         if not self.enemies:
             self.any_enemy_aggro = False
             return
+        if not self.map_data:
+            return
         remaining: list[dict] = []
         removed_any = False
         any_aggro = False
         px, py = self.player_rect.center
+        force_global_aggro = (
+            self.current_floor == "F10"
+            and bool(self.sanctuary_state)
+            and self.sanctuary_state.get("defense_active", False)
+        )
+        use_astar = force_global_aggro
+        cell_px = 0
+        target_cell: tuple[int, int] | None = None
+        grid_w = grid_h = 0
+        if use_astar:
+            cell_px = max(1, int(self.map_data.cell_size * self.map_scale))
+            grid_w, grid_h = self.map_data.grid_size
+            target_cell = (
+                max(0, min(grid_w - 1, int(px // cell_px))),
+                max(0, min(grid_h - 1, int(py // cell_px))),
+            )
         for enemy in self.enemies:
             enemy.setdefault("hp", float(settings.ENEMY_MAX_HEALTH))
             enemy.setdefault("max_hp", float(settings.ENEMY_MAX_HEALTH))
@@ -3710,6 +4775,10 @@ class Game:
             enemy.setdefault("show_health", 0.0)
             enemy.setdefault("attack_timer", random.uniform(0.1, settings.ENEMY_ATTACK_COOLDOWN))
             enemy.setdefault("attack_anim_timer", 0.0)
+            if use_astar:
+                enemy.setdefault("path", [])
+                enemy.setdefault("path_goal", None)
+                enemy.setdefault("path_timer", random.uniform(0.2, 0.4))
             if enemy.get("flash_timer", 0.0) > 0.0:
                 enemy["flash_timer"] = max(0.0, enemy["flash_timer"] - dt)
             if enemy.get("show_health", 0.0) > 0.0:
@@ -3737,7 +4806,9 @@ class Game:
 
             aggro = False
             if not self.player_dead:
-                if enemy.get("aggro", False):
+                if force_global_aggro:
+                    aggro = True
+                elif enemy.get("aggro", False):
                     aggro = dist_sq <= lose_sq
                 else:
                     aggro = dist_sq <= aggro_sq
@@ -3762,10 +4833,13 @@ class Game:
             if dist > attack_range and not self.player_dead:
                 step = move_speed * dt
                 if step > 0:
-                    move_x = int(round(dx / dist * step))
-                    move_y = int(round(dy / dist * step))
-                    if move_x or move_y:
-                        self._move_enemy(enemy, move_x, move_y)
+                    if use_astar and target_cell:
+                        self._enemy_astar_move(enemy, dt, target_cell, cell_px, move_speed, grid_w, grid_h)
+                    else:
+                        move_x = int(round(dx / dist * step))
+                        move_y = int(round(dy / dist * step))
+                        if move_x or move_y:
+                            self._move_enemy(enemy, move_x, move_y)
             elif dist <= attack_range and enemy["attack_timer"] <= 0.0:
                 self._apply_player_damage(attack_damage)
                 enemy["attack_timer"] = settings.ENEMY_ATTACK_COOLDOWN
@@ -3796,6 +4870,64 @@ class Game:
         )
         enemy["x"] = float(moved.centerx)
         enemy["y"] = float(moved.centery)
+
+    def _enemy_astar_move(
+        self,
+        enemy: dict,
+        dt: float,
+        target_cell: tuple[int, int],
+        cell_px: int,
+        move_speed: float,
+        grid_w: int,
+        grid_h: int,
+    ) -> None:
+        if not self.map_data or cell_px <= 0:
+            return
+        ex = float(enemy.get("x", 0.0))
+        ey = float(enemy.get("y", 0.0))
+        start_cell = (
+            max(0, min(grid_w - 1, int(ex // cell_px))),
+            max(0, min(grid_h - 1, int(ey // cell_px))),
+        )
+        if enemy.get("path_goal") != target_cell:
+            enemy["path"] = []
+        timer = float(enemy.get("path_timer", 0.0)) - dt
+        if timer <= 0.0 or not enemy.get("path"):
+            enemy_size = (settings.ENEMY_RADIUS * 2, settings.ENEMY_RADIUS * 2)
+            path_nodes = self._lab_astar(
+                start_cell,
+                target_cell,
+                actor_size=enemy_size,
+                nav_cache=self.nav_cache_enemy,
+                cache=self.lab_path_cache_enemy,
+            )
+            enemy["path"] = path_nodes[1:] if len(path_nodes) > 1 else []
+            enemy["path_goal"] = target_cell
+            enemy["path_timer"] = random.uniform(0.35, 0.6)
+        else:
+            enemy["path_timer"] = timer
+        path = enemy.get("path", [])
+        if not path:
+            return
+        next_node = path[0]
+        target_x = (next_node[0] + 0.5) * cell_px
+        target_y = (next_node[1] + 0.5) * cell_px
+        dx = target_x - ex
+        dy = target_y - ey
+        dist = math.hypot(dx, dy)
+        if dist <= 1.0:
+            enemy["x"] = float(target_x)
+            enemy["y"] = float(target_y)
+            path.pop(0)
+            enemy["path"] = path
+            return
+        step = move_speed * dt
+        if step <= 0.0:
+            return
+        move_x = int(round(dx / dist * step))
+        move_y = int(round(dy / dist * step))
+        if move_x or move_y:
+            self._move_enemy(enemy, move_x, move_y)
 
     def _spawn_enemy_attack_fx(self, enemy: dict) -> None:
         duration = settings.ENEMY_ATTACK_FX_DURATION
@@ -4094,6 +5226,9 @@ class Game:
         if self.current_floor == "F10" and self.sanctuary_state.get("defense_active"):
             self.combat_active = True
             return
+        if self.current_floor == "F15":
+            self._mirror_on_enemies_cleared()
+            return
         self._set_quest_stage("log")
         self._show_dialog(["异常源已清除，终端恢复可用。"], title="系统")
 
@@ -4203,13 +5338,12 @@ class Game:
         cell = self.map_data.cell_size * self.map_scale
         start = (self.player_rect.centerx // cell, self.player_rect.centery // cell)
         goal = self.path_goal_cell
-        path_nodes = pathfinding.astar(
-            self.map_data.collision_grid,
+        path_nodes = self._lab_astar(
             start,
             goal,
-            settings.PASSABLE_VALUES,
-            cell_size=self.map_data.cell_size,
             actor_size=settings.PLAYER_SIZE,
+            nav_cache=self.nav_cache_player,
+            cache=self.lab_path_cache_player,
         )
         self.path = path_nodes[1:] if len(path_nodes) > 1 else []
         if not self.path:
@@ -4262,7 +5396,7 @@ class Game:
             if self.combat_active:
                 return False
             if self.current_floor == "F40":
-                return self.quest_stage in {"lab_switch", "lab_exit"}
+                return False
             if self.current_floor == "F35":
                 return self.archive_flags.get("log_available", False)
             if self.current_floor == "F30":
@@ -4276,7 +5410,7 @@ class Game:
             return self.quest_stage in {"explore", "log"}
         if t == "switch":
             if self.current_floor == "F40":
-                return self.quest_stage in {"lab_switch", "lab_exit"}
+                return False
             if self.current_floor == "F25":
                 return self.resonator_state.get("boss_state") == "dormant"
             return True
@@ -4286,16 +5420,34 @@ class Game:
                 return not npc_state.get("hostile", False)
             if self.current_floor == "F25":
                 return self.resonator_state.get("boss_state") != "active"
+            if self.current_floor == "F15":
+                state = self.mirror_state or {}
+                return bool(state.get("mirror_talk_ready")) and state.get("boss_state") == "sync"
             if self.current_floor == "F10":
-                return bool(self.sanctuary_state) and self.sanctuary_state.get("aera_state") == "active" and not self.sanctuary_state.get("battle_complete", False)
+                state = self.sanctuary_state
+                return (
+                    bool(state)
+                    and state.get("aera_dialog_done", False)
+                    and state.get("aera_state") == "active"
+                    and not state.get("battle_complete", False)
+                )
+            return True
+        if t == "pickup":
+            if self.current_floor == "F15":
+                state = self.mirror_state or {}
+                return bool(state.get("rifle_drop")) and not state.get("rifle_claimed", False)
             return True
         if t == "exit":
+            if self.current_floor == "F40":
+                return self.floor_flags.get("lab_exit_unlocked", False)
             if self.current_floor == "F35":
                 return self.archive_flags.get("exit_unlocked", False)
             if self.current_floor == "F30":
                 return self.logic_flags.get("exit_unlocked", False)
             if self.current_floor == "F25":
                 return self.resonator_state.get("exit_unlocked", False)
+            if self.current_floor == "F15":
+                return self.mirror_state.get("exit_unlocked", False)
             if self.current_floor == "F10":
                 return self.sanctuary_state.get("exit_unlocked", False)
             return True
@@ -4306,6 +5458,11 @@ class Game:
         if not self.map_data:
             return
         px, py = self.player_rect.center
+        if self.current_floor == "F15":
+            dyn = self._mirror_dynamic_interaction(px, py)
+            if dyn and self._interaction_allowed(dyn):
+                self.interaction_target = dyn
+                return
         for trig in self._interaction_zones():
             x1, y1, x2, y2 = trig["rect"]
             if x1 <= px <= x2 and y1 <= py <= y2 and self._interaction_allowed(trig):
@@ -4341,7 +5498,13 @@ class Game:
         if t == "npc":
             if self.current_floor == "F10" and trig.get("id") == "aera":
                 return "按F使用认知溶解剂"
+            if self.current_floor == "F15" and trig.get("id") == "mirror":
+                return "按F对话"
             return "按F交流"
+        if t == "pickup":
+            if self.current_floor == "F15" and trig.get("id") == "mirror_rifle":
+                return "按F拾取步枪"
+            return "按F拾取"
         return "按F互动"
 
     def _activate_interaction(self, trig: dict) -> None:
@@ -4349,6 +5512,9 @@ class Game:
         if t == "exit" and "to_floor" in trig:
             if self.current_floor == "F50" and self.elevator_locked:
                 self._show_dialog(["这个电梯怎么开呢？"], title="提示")
+                return
+            if self.current_floor == "F40" and not self.floor_flags.get("lab_exit_unlocked", False):
+                self._show_dialog(["系统：电梯权限尚未开放。"], title="系统")
                 return
             if self.current_floor == "F35" and (self.elevator_locked or not self.archive_flags.get("exit_unlocked", False)):
                 self._show_dialog(["系统：档案核心仍未稳定，无法启动电梯。"], title="系统")
@@ -4413,6 +5579,14 @@ class Game:
             if not self._interaction_allowed(trig):
                 return
             self._handle_npc_interaction(trig)
+            return
+        if t == "pickup":
+            if not self._interaction_allowed(trig):
+                return
+            if self.current_floor == "F15" and trig.get("id") == "mirror_rifle":
+                self._mirror_handle_rifle_pickup()
+            else:
+                self._show_dialog(["没有可以拾取的物品。"], title="提示")
             return
         # fallback
         self._show_dialog(["没有可以操作的反应。"], title="提示")
@@ -4610,17 +5784,11 @@ class Game:
         if self.quest_stage == "elevator":
             return ["任务：乘坐电梯前往F40"]
         if self.quest_stage == "lab_intro":
-            return ["任务：评估感官实验室", "目标：离开电梯区域并侦测环境"]
-        if self.quest_stage == "lab_path":
-            return ["任务：前往实验枢纽", "目标：穿越扭曲走廊"]
-        if self.quest_stage == "lab_choice":
-            return ["任务：处理逻辑错误实体", "提示：决定战斗或寻找替代路径"]
-        if self.quest_stage == "lab_bypass":
-            return ["任务：绕过能量墙", "目标：沿回廊寻找开关"]
-        if self.quest_stage == "lab_switch":
-            return ["任务：解锁电梯权限", "目标：与终端与开关交互"]
+            return ["任务：与？？？对话", "目标：找到奇怪的人"]
+        if self.quest_stage == "lab_cleanup":
+            return ["任务：清理异常", "目标：进入中央区域清理怪物"]
         if self.quest_stage == "lab_exit":
-            return ["任务：前往记忆档案馆", "目标：乘坐电梯离开感官实验室"]
+            return ["任务：前往记忆档案馆", "目标：乘坐中央电梯离开感官实验室"]
         if self.quest_stage == "archive_intro":
             return ["任务：等待指引者解析环境"]
         if self.quest_stage == "archive_maze":
@@ -4649,6 +5817,18 @@ class Game:
             return ["任务：收集音频日志", "目标：读取共鸣器核心记录"]
         if self.quest_stage == "resonator_exit":
             return ["任务：前往下一层", "目标：乘坐北侧电梯离开共鸣器"]
+        if self.quest_stage == "mirror_intro":
+            return ["任务：等待镜像协议同步"]
+        if self.quest_stage == "mirror_cleanup":
+            return ["任务：携手镜像清理异常", "提示：中轴线无法穿越"]
+        if self.quest_stage == "mirror_talk":
+            return ["任务：与镜像对话", "提示：靠近中轴线的镜像按F"]
+        if self.quest_stage == "mirror_boss":
+            return ["任务：击败镜像", "提示：电梯仍可使用"]
+        if self.quest_stage == "mirror_exit":
+            return ["任务：前往避难所", "目标：乘坐右侧电梯"]
+        if self.quest_stage == "sanctuary_find":
+            return ["任务：寻找艾拉", "提示：靠近避难所中心区域"]
         if self.quest_stage == "sanctuary_agent":
             return ["任务：使用认知溶解剂", "提示：靠近艾拉按F"]
         if self.quest_stage == "sanctuary_exit":
@@ -4900,10 +6080,11 @@ class Game:
 
     def _set_quest_stage(self, stage: str) -> None:
         self.quest_stage = stage
-        if stage in {"elevator", "lab_exit", "resonator_log", "resonator_exit", "sanctuary_exit", "sanctuary_done"}:
+        if stage in {"elevator", "lab_exit", "resonator_log", "resonator_exit", "mirror_exit", "sanctuary_exit", "sanctuary_done"}:
             self.elevator_locked = False
-        if stage in {"intro", "explore", "combat", "log", "lab_intro", "lab_path", "lab_choice", "lab_bypass", "lab_switch",
-                     "resonator_intro", "resonator_talk", "resonator_boss", "sanctuary_agent"}:
+        if stage in {"intro", "explore", "combat", "log", "lab_intro", "lab_cleanup",
+                     "resonator_intro", "resonator_talk", "resonator_boss", "mirror_intro",
+                     "mirror_cleanup", "mirror_talk", "sanctuary_find", "sanctuary_agent"}:
             self.elevator_locked = True
 
     def _draw_cutscene_dialog(self) -> None:
