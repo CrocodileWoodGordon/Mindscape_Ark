@@ -1,38 +1,16 @@
 # Mindscape Ark
 
-Mindscape Ark is a top-down narrative prototype built with Pygame. The current slice delivers the Dormitory (Floor 50) and Sensory Lab (Floor 40) with onboarding, combat, and branching encounter logic faithful to the design outline.
+Mindscape Ark 是一款俯视角叙事动作游戏。你将从 50 层宿舍区出发，穿越感官实验室与更深层的记忆结构，逐步揭开方舟内部的异变与自身的真实身份。
 
-## Project Status / 当前状态
-- 已完成 Completed: Boot-to-playable loop covering Floor 50 和 Floor 40，包含引导开场、战斗系统、分支剧情、任务 HUD 以及电梯解锁流程。
-- 下一步 Next up: 构建 Floor 35 场景、接入持久化存档、扩展武器与成就系统，并补充音效/特效打磨。
+## 下载方式（请先看这里）
+在本页面右侧的 **Releases** 栏中选择与你的系统匹配的版本下载并运行。
 
-## Requirements
-- Python 3.13 (see `.python-version`).
-- Dependencies handled by the project: `pygame>=2.6.1`, `openai`, `python-dotenv`. Install via `uv` or `pip`.
-- A desktop environment capable of opening a 1280×720 Pygame window.
+## 游戏概览
+- 章节结构：宿舍区（Floor 50）→ 感官实验室（Floor 40）→ 更深层区域逐步开放。
+- 战斗方式：自由移动 + 鼠标指向射击，支持自动寻路与战斗中的装填管理。
+- 叙事体验：引导式开场、任务阶段推进、分支事件与楼层电梯解锁。
 
-## Setup
-
-### Using uv (recommended)
-```bash
-uv sync
-```
-
-### Using pip
-```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -e .
-```
-
-## Run
-From the repository root:
-```bash
-uv run python -m src.main
-```
-If your virtual environment is already active, `python -m src.main` is sufficient. Keep the input method in English so shortcuts register. Press `F2` in-game to jump directly to Floor 40 for debugging.
-
-## Controls / 操作
+## 操作方式
 - `WASD` / Arrow keys — 手动移动（支持对角线；相反方向会互锁直到松开）。
 - Mouse right-click — A* 自动寻路，无法直达时退化到最近可达格。
 - Mouse left-click / `Space` — 朝鼠标方向射击。
@@ -41,7 +19,7 @@ If your virtual environment is already active, `python -m src.main` is sufficien
 - `Esc` — 退出游戏。
 - `F2` — 调试跳转到 Floor 40。
 
-## Current Gameplay Slice
+## 当前可体验内容
 
 ### Boot & Floor 50 — Dormitory
 - Glitch 开机序列过渡到 Mosaic 地图揭示，再进入指引者的逐字 Cutscene 教学。
@@ -55,7 +33,7 @@ If your virtual environment is already active, `python -m src.main` is sufficien
 - 逻辑错误实体 NPC 记录玩家对抗或绕行的选择，分别引入战斗或陷阱挑战并驱动任务阶段（`lab_intro → lab_path → lab_choice → lab_bypass/lab_switch → lab_exit`）。
 - 开关与终端交互绑定电梯权限；逻辑错误实体分支清理完毕后才能解除封锁。电梯出口暂指向待建的 Floor 35。
 
-## Systems Implemented
+## 已实现系统
 - **Movement & Pathfinding**: 手动移动与冲突锁定处理，右键 A* 寻路，最近点 fallback，路径跟随检测阻塞并重规划。
 - **Combat Loop**: 命中判定与子弹生存期、弹匣/冷却管理、玩家受击闪光、敌人追踪 AI、攻击前摇特效、死亡淡出。
 - **Interaction & Quests**: F 键提示、对话遮罩、逐字 Cutscene、任务 HUD、楼层切换、电梯锁与支线条件判断。
@@ -63,20 +41,12 @@ If your virtual environment is already active, `python -m src.main` is sufficien
 - **Assets Pipeline**: JSON 地图加载、Floor50 碰撞由 `Floor50_mask.png` 生成、抽象实验室渲染、字体自动解析为 `assets/fonts` 的 NotoSansSC、可选启动音效 `boot_glitch.wav`。
 - **Testing**: `tests/test_smoke.py` 作为导入烟雾测试，确保入口模块可初始化。
 
-## Repository Layout
-- `src/core` — 游戏循环、设置与楼层状态管理。
-- `src/systems` — 碰撞、寻路、UI。
-- `src/maps` — 地图数据类与加载方法。
-- `assets/images` — 楼层底图与角色动画；`assets/maps` — JSON 碰撞网格；`assets/audio` — 启动音效；`assets/fonts` — 字体资源。
-- `assets/…` 以外的 `data/saves` 目前预留为空（即将用于持久化存档）。
-
-## Roadmap
-1. 构建 Floor 35 地图、剧情节点与与 F40 电梯衔接。
-2. 打通持久化存档/读档流程，利用 `data/saves`.
-3. 扩展战斗：新增武器、怪物配置、成就/统计。
-4. 增强视听反馈：环境音效、命中特效、性能优化。
+## 开发者信息（可选）
+如果你想从源码运行：
+- Python 3.13（见 `.python-version`）。
+- 依赖：`pygame>=2.6.1`, `openai`, `python-dotenv`，可使用 `uv` 或 `pip` 安装。
+- 运行方式：`uv run python -m src.main` 或启用虚拟环境后执行 `python -m src.main`。
 
 ## Troubleshooting
-- 若 `pygame` 未安装，请先执行安装步骤；headless 环境需要虚拟显示。
 - 在中文输入法下快捷键会失效，请切换到英文输入。
-- 如需快速验证实验室，使用 `F2` 或直接修改 `START_FLOOR` 常量。
+- 若 `pygame` 未安装，请先执行安装步骤；headless 环境需要虚拟显示。
