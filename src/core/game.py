@@ -170,7 +170,7 @@ class Game:
 
     def _load_floor(self, path: Path, *, preserve_health: bool = True) -> None:
         prev_health = float(getattr(self, "player_health", settings.PLAYER_MAX_HEALTH))
-        self.map_data = load_map(path, base_dir=settings.BASE_DIR)
+        self.map_data = load_map(path, base_dir=settings.ASSETS_ROOT.parent)
         self.debug_menu_active = False
         self.debug_press_times.clear()
         self.debug_menu_options = []
