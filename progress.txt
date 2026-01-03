@@ -62,6 +62,8 @@
 - 重做成就列表以匹配现有楼层与剧情，并新增终章结算成就与镜像相关成就。
 - 在终章结束后加入结算菜单，可直接查看成就或返回标题，并调整相关输入逻辑。
 - 新增“无伤通关”成就，并在通关时检测是否全程未受伤。
+- 新增根目录入口 main.py 并调整构建工作流入口，避免打包后入口脚本无法正确解析包结构。
+- 修复 src/main.py 在脚本方式执行时的导入路径，避免 PyInstaller 以脚本执行入口时触发相对导入异常。
 ## In Progress
 - Pause menu options for save/achievements are stubbed and awaiting full implementations.
 - Save system hooks are reserved via `data/saves` but persistence is not wired up.
