@@ -67,6 +67,9 @@
 - 拆分打包根目录与资源目录：冻结环境下优先使用 sys._MEIPASS 定位 assets，避免 onedir 的 _internal 目录导致资源丢失。
 - 修正打包环境地图图片路径解析：地图加载改用资源根目录的父级作为基准，确保 image 字段能解析到 _internal/assets。
 - 修复镜像层对话触发判定：只有靠近镜像实体范围内才会出现对话交互提示。
+- 根据 Floor15_mask.png 重新生成第15层碰撞网格并更新地图文件。
+- 修复镜像Boss战后步枪拾取：必须靠近镜像尸体才可交互。
+- 新增成就“人格觉醒”，在击败镜像且与艾拉共同抵御敌人后解锁。
 ## In Progress
 - Pause menu options for save/achievements are stubbed and awaiting full implementations.
 - Save system hooks are reserved via `data/saves` but persistence is not wired up.

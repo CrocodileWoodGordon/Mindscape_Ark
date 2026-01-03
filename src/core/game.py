@@ -576,6 +576,12 @@ class Game:
         self.achievement_notice_text = f"成就达成：{title}"
         self.achievement_notice_timer = settings.ACHIEVEMENT_NOTICE_DURATION
 
+    def _maybe_unlock_persona_awakening(self) -> None:
+        if "persona_awakening" not in self.achievement_ids:
+            return
+        if self.story_flags.get("mirror_boss_defeated") and self.story_flags.get("aera_defended"):
+            self._unlock_achievement("persona_awakening")
+
     def _update_achievement_notice(self, dt: float) -> None:
         if self.achievement_notice_timer <= 0.0:
             return
@@ -1642,6 +1648,7 @@ class Game:
         self._show_ambient_dialog(["Thank you... for believing in us."], title="艾拉", lifetime=5.0)
         if "humanitarian" in self.achievement_ids:
             self._unlock_achievement("humanitarian")
+        self._maybe_unlock_persona_awakening()
 
     def _enter_floor_f40(self) -> None:
         self._set_quest_stage("lab_intro")
@@ -4145,6 +4152,7 @@ class Game:
         self.combat_active = False
         self.story_flags["mirror_boss_defeated"] = True
         self._unlock_achievement("mirror_shatter")
+        self._maybe_unlock_persona_awakening()
         self._set_quest_stage("mirror_exit")
         self._show_dialog([
             "镜像破碎成无数碎片，残留的意识随风散尽。",
@@ -4263,6 +4271,8 @@ class Game:
                 int(dx + radius),
                 int(dy + radius),
             )
+            if not (rect[0] <= px <= rect[2] and rect[1] <= py <= rect[3]):
+                return None
             return {"id": "mirror_rifle", "type": "pickup", "rect": rect}
         return None
 

@@ -289,6 +289,7 @@ ACHIEVEMENTS = [
     {"id": "mirror_shatter", "title": "镜像破碎", "desc": "击败镜像空间的对立体。"},
     {"id": "rifle_claimed", "title": "熵能步枪", "desc": "拾取镜像遗留的步枪。"},
     {"id": "humanitarian", "title": "人道主义", "desc": "拒绝系统指令，守住艾拉与核心装置。"},
+    {"id": "persona_awakening", "title": "人格觉醒", "desc": "察觉真相，击败镜像并和艾拉共同抵御所有敌人。"},
     {"id": "efficiency_expert", "title": "效率至上", "desc": "服从指令，使用认知溶解剂。"},
     {"id": "no_damage_clear", "title": "无伤通关", "desc": "在未受到任何伤害的情况下完成本轮迭代。"},
     {"id": "ark_ending", "title": "终章结算", "desc": "完成本轮迭代并看到实验结论。"},
