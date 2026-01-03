@@ -20,6 +20,7 @@ MAP_FILES = {
     "F25": MAPS_DIR / "floor25.json",
     "F15": MAPS_DIR / "floor15.json",
     "F10": MAPS_DIR / "floor10.json",
+    "F0": MAPS_DIR / "floor0.json",
 }
 START_FLOOR = "F50"
 
@@ -182,6 +183,7 @@ INTERACT_MASKS = {
     "F25": None,
     "F15": None,
     "F10": None,
+    "F0": None,
 }
 INTERACT_MASK_RADIUS = 12  # map pixels radius to consider near a red zone
 
@@ -210,7 +212,7 @@ INTERACT_ZONES = {
         {"id": "logic_server_reset", "type": "switch", "rect": (493, 857, 566, 935)},
     ],
     "F25": [
-        {"id": "resonator_exit", "type": "exit", "rect": (148, 6, 172, 42), "to_floor": "F10"},
+        {"id": "resonator_exit", "type": "exit", "rect": (148, 6, 172, 42), "to_floor": "F15"},
         {"id": "resonator_npc_anger", "type": "npc", "rect": (84, 58, 126, 126)},
         {"id": "resonator_npc_betrayal", "type": "npc", "rect": (204, 58, 246, 126)},
         {"id": "resonator_npc_confusion", "type": "npc", "rect": (232, 130, 276, 196)},
@@ -224,7 +226,7 @@ INTERACT_ZONES = {
         {"id": "mirror_exit", "type": "exit", "rect": (928, 480, 1008, 548), "to_floor": "F10"},
     ],
     "F10": [
-        {"id": "sanctuary_exit", "type": "exit", "rect": (450, 870, 516, 936), "to_floor": "F25"},
+        {"id": "sanctuary_exit", "type": "exit", "rect": (450, 870, 516, 936), "to_floor": "F0"},
         {"id": "aera", "type": "npc", "rect": (465, 477, 513, 525)},
     ],
 }

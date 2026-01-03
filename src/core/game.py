@@ -97,6 +97,7 @@ class Game:
         self.cutscene_char_progress = 0.0
         self.cutscene_done_line = False
         self.cutscene_started = False
+        self.cutscene_on_complete = ""
         self.enemy_attack_fx: list[dict] = []
         self.player_hit_timer = 0.0
         self.player_health_max = settings.PLAYER_MAX_HEALTH
@@ -134,6 +135,8 @@ class Game:
         self.sanctuary_state: dict[str, object] = {}
         self.mirror_state: dict[str, object] = {}
         self.mirror_assets: dict[str, pygame.Surface] = {}
+        self.floor0_state: dict[str, object] = {}
+        self.floor0_assets: dict[str, pygame.Surface] = {}
         self.aera_sprite: pygame.Surface | None = None
         self.logic_flags: dict[str, bool] = {}
         self.logic_sequence: list[str] = []
@@ -252,6 +255,7 @@ class Game:
         self.sanctuary_state = {}
         self.mirror_state = {}
         self.aera_sprite = None
+        self.floor0_state = {}
         self.archive_flash_sequence = []
         self.archive_pulse_state = {}
         self.archive_flash_active = False
@@ -372,6 +376,10 @@ class Game:
             return
         if self.debug_menu_active:
             self._handle_debug_menu_event(event)
+            return
+        if self.current_floor == "F0":
+            if event.type == pygame.KEYDOWN and event.key in (pygame.K_ESCAPE, pygame.K_RETURN):
+                self._restart_to_menu()
             return
         if event.type == pygame.KEYDOWN:
             if event.key == pygame.K_BACKQUOTE and not self.debug_menu_active:
@@ -811,6 +819,15 @@ class Game:
             self.interaction_target = None
             self._update_camera()
             return
+        if self.current_floor == "F0":
+            self.interaction_target = None
+            self.path = []
+            self.path_target = None
+            self.path_goal_cell = None
+            self._update_player_animation(False, dt)
+            self._update_floor_logic(dt)
+            self._update_camera()
+            return
         if self.dialog_lines:
             self.interaction_target = None
             self._update_camera()
@@ -915,7 +932,7 @@ class Game:
                     self.map_data.collision_grid[y] = row[:]  # restore base grid snapshot
         self.nav_cache_player = None
         self.nav_cache_enemy = None
-        if self.current_floor in {"F50", "F40", "F35", "F30", "F25", "F15", "F10"}:
+        if self.current_floor in {"F50", "F40", "F35", "F30", "F25", "F15", "F10", "F0"}:
             self.nav_cache_player = pathfinding.build_nav_cache(
                 self.map_data.collision_grid,
                 settings.PASSABLE_VALUES,
@@ -941,6 +958,8 @@ class Game:
             self._enter_floor_f15()
         elif self.current_floor == "F10":
             self._enter_floor_f10()
+        elif self.current_floor == "F0":
+            self._enter_floor_f0()
         else:
             self._enter_floor_default()
 
@@ -1173,6 +1192,171 @@ class Game:
         self.elevator_locked = True
         self._set_quest_stage("sanctuary_find")
 
+    def _enter_floor_f0(self) -> None:
+        if not self.map_data:
+            return
+        mirror_triggered = bool(self.story_flags.get("mirror_boss_triggered", False))
+        solvent_used = bool(self.story_flags.get("sanctuary_used_solvent", False))
+        percent, header, cutscene_lines, summary_lines = self._floor0_cutscene_package(mirror_triggered, solvent_used)
+        scale = max(1, self.map_scale)
+        spawn_x, spawn_y = self.map_data.spawn_player
+        npc_map_pos = (spawn_x + 42, spawn_y - 18)
+        npc_pos_scaled = (npc_map_pos[0] * scale, npc_map_pos[1] * scale)
+        self.floor0_state = {
+            "mirror_triggered": mirror_triggered,
+            "solvent_used": solvent_used,
+            "awakening_percent": percent,
+            "header": header,
+            "summary_lines": summary_lines,
+            "npc_pos_scaled": npc_pos_scaled,
+            "lock_movement": True,
+            "cutscene_done": False,
+            "tip_shown": False,
+        }
+        self.story_flags["floor0_awakening_percent"] = percent
+        self._floor0_load_assets()
+        self._floor0_start_cutscene(cutscene_lines)
+        self.elevator_locked = True
+        self._set_quest_stage("floor0_awaken")
+
+    def _floor0_load_assets(self) -> None:
+        if self.floor0_assets.get("assistant"):
+            return
+        path = settings.IMAGES_DIR / "Floor0_npc_1.png"
+        if not path.exists():
+            return
+        try:
+            sprite = pygame.image.load(str(path)).convert_alpha()
+        except Exception:
+            return
+        if self.map_scale != 1:
+            w, h = sprite.get_size()
+            sprite = pygame.transform.scale(sprite, (int(w * self.map_scale), int(h * self.map_scale)))
+        sprite = self._apply_transparent_background(sprite)
+        self.floor0_assets["assistant"] = sprite
+
+    def _floor0_start_cutscene(self, lines: list[dict]) -> None:
+        self.cutscene_lines = lines
+        self.cutscene_idx = 0
+        self.cutscene_char_progress = 0.0
+        self.cutscene_done_line = False
+        self.cutscene_active = True
+        self.cutscene_on_complete = "boot"
+        self.cutscene_on_complete = "floor0"
+
+    def _floor0_cutscene_package(
+        self,
+        mirror_triggered: bool,
+        solvent_used: bool,
+    ) -> tuple[int, str, list[dict], list[str]]:
+        if mirror_triggered and not solvent_used:
+            percent = 100
+            header = "实验结论：觉醒度 100%"
+            summary = [
+                "镜像协议：已触发（身份棱镜破碎）",
+                "认知溶解剂：未使用",
+                "标记：主体完全脱离锚定",
+            ]
+            lines = [
+                {"speaker": "系统总控", "text": "实验迭代 #7 状态：镜像协议触发，身份棱镜被击碎。"},
+                {"speaker": "系统总控", "text": "评估：实验成功。个体认知恢复度 100%，锚定协议失效。"},
+                {"speaker": "助手研究员", "text": "主任，他看穿了这是一场试验，连镜像协议都挡不住。"},
+                {"speaker": "助手研究员", "text": "建议立即终止后续循环，这已经不是可控的样本了。"},
+                {"speaker": "系统总控", "text": "记录为“完全觉醒”。封存实验体 P-7，转入人工审查。"},
+            ]
+        elif not mirror_triggered and solvent_used:
+            percent = 0
+            header = "实验结论：觉醒度 0%"
+            summary = [
+                "镜像协议：未触发",
+                "认知溶解剂：已注射",
+                "标记：完全依循指令",
+            ]
+            lines = [
+                {"speaker": "系统总控", "text": "实验迭代 #7 状态：主体完全听从系统指令。"},
+                {"speaker": "系统总控", "text": "评估：镜像协议未触发，认知溶解剂已注射。个体认知恢复度 0%。"},
+                {"speaker": "助手研究员", "text": "没有偏差，像模板一样干净……主任，我们要继续复制吗？"},
+                {"speaker": "系统总控", "text": "记录为“完全依赖”。装载下一号实验体，维持指令模板。"},
+            ]
+        elif mirror_triggered and solvent_used:
+            percent = 20
+            header = "实验结论：觉醒度 20%"
+            summary = [
+                "镜像协议：已触发",
+                "认知溶解剂：已注射",
+                "标记：可控觉醒状态",
+            ]
+            lines = [
+                {"speaker": "系统总控", "text": "实验迭代 #7 状态：身份棱镜被击碎，终端指令执行完毕。"},
+                {"speaker": "系统总控", "text": "评估：个体认知恢复度 20%。主体辨识真相，却仍选择效率路径。"},
+                {"speaker": "助手研究员", "text": "他看见了这里，却还是按下了注射器……忠诚还是绝望？"},
+                {"speaker": "系统总控", "text": "标记为“可控觉醒”。提高下一次迭代的诱导强度。"},
+            ]
+        else:
+            percent = 45
+            header = "实验结论：觉醒度 45%"
+            summary = [
+                "镜像协议：未触发",
+                "认知溶解剂：未使用",
+                "标记：情感干扰型脱锚",
+            ]
+            lines = [
+                {"speaker": "系统总控", "text": "实验迭代 #7 状态：主体拒绝执行终端指令。"},
+                {"speaker": "系统总控", "text": "评估：个体认知恢复度 45%。情感触发脱锚，仍未彻底看穿模拟。"},
+                {"speaker": "助手研究员", "text": "他选择保护艾拉，却还把我们当成现实。直觉在替他行动。"},
+                {"speaker": "系统总控", "text": "标记为“情感干扰型脱锚”。调整下一次实验的情绪噪声权重。"},
+            ]
+        return percent, header, lines, summary
+
+    def _floor0_on_cutscene_end(self) -> None:
+        state = self.floor0_state
+        if not state:
+            return
+        state["cutscene_done"] = True
+        self._set_quest_stage("floor0_done")
+
+    def _update_floor_f0(self, dt: float) -> None:  # noqa: ARG002
+        state = self.floor0_state
+        if not state:
+            return
+        if state.get("cutscene_done") and not state.get("tip_shown") and not self.cutscene_active and not self.dialog_lines:
+            self._show_dialog(["按 Esc 返回标题界面，或按 Enter 回到主菜单。"], title="提示")
+            state["tip_shown"] = True
+
+    def _draw_floor0_environment(self) -> None:
+        state = self.floor0_state
+        if not state:
+            return
+        ox, oy = self.map_offset
+        sprite = self.floor0_assets.get("assistant")
+        pos = state.get("npc_pos_scaled")
+        if sprite and pos:
+            rect = sprite.get_rect(center=(int(pos[0] + ox), int(pos[1] + oy)))
+            self.screen.blit(sprite, rect)
+        header = state.get("header", "")
+        percent = state.get("awakening_percent")
+        summary_lines = state.get("summary_lines", [])
+        overlay_width = 360
+        overlay_height = 120 + max(0, len(summary_lines)) * 24
+        overlay = pygame.Surface((overlay_width, overlay_height), pygame.SRCALPHA)
+        overlay.fill((12, 16, 26, 190))
+        pad = 14
+        y = pad
+        if header:
+            header_surf = self.font_dialog.render(header, True, settings.TITLE_GLOW_COLOR)
+            overlay.blit(header_surf, (pad, y))
+            y += header_surf.get_height() + 8
+        if percent is not None:
+            percent_text = f"个体认知恢复度：{percent}%"
+            percent_surf = self.font_prompt.render(percent_text, True, settings.QUEST_TEXT)
+            overlay.blit(percent_surf, (pad, y))
+            y += percent_surf.get_height() + 6
+        for line in summary_lines:
+            line_surf = self.font_prompt.render(line, True, settings.QUEST_TEXT)
+            overlay.blit(line_surf, (pad, y))
+            y += line_surf.get_height() + 4
+        self.screen.blit(overlay, (self.map_offset[0] + 40, self.map_offset[1] + 40))
+
     def _start_sanctuary_defense(self) -> None:
         state = self.sanctuary_state
         if not state or state.get("defense_active") or state.get("branch"):
@@ -1352,6 +1536,7 @@ class Game:
         if not state or state.get("aera_state") != "active":
             return
         state["branch"] = "comply"
+        self.story_flags["sanctuary_used_solvent"] = True
         state["intro_shown"] = True
         state["defense_active"] = False
         state["battle_complete"] = False
@@ -1622,6 +1807,7 @@ class Game:
             sprite = pygame.image.load(str(path)).convert_alpha()
         except Exception:
             return
+        sprite = pygame.transform.rotate(sprite, 90)
         rect = self._lab_npc_rect()
         if rect:
             target_w = max(1, int(rect.width * self.map_scale))
@@ -2216,6 +2402,8 @@ class Game:
             self._update_floor_f15(dt)
         elif self.current_floor == "F10":
             self._update_floor_f10(dt)
+        elif self.current_floor == "F0":
+            self._update_floor_f0(dt)
 
     def _update_floor_f30(self, dt: float) -> None:
         if not self.map_data:
@@ -2300,8 +2488,7 @@ class Game:
             if timer <= 0.0:
                 state["intro_shown"] = True
                 self._show_dialog([
-                    "指引者：镜像空间。镜像将对称模仿你的行动。",
-                    "与镜像同步清理异常。"
+                    "指引者：这是一个镜面空间，尝试利用我帮你创造的镜像协助完成任务。"
                 ], title="指引者")
                 self._set_quest_stage("mirror_cleanup")
             else:
@@ -2766,9 +2953,13 @@ class Game:
         dy = py - self.archive_center[1]
         dist = math.hypot(dx, dy)
         safe_radius = self.archive_core_radius + 36.0
+        in_pulse = dist <= safe_radius
+        if not in_pulse:
+            if "pulse_cover_prompt" in self.archive_flags:
+                self.archive_flags.pop("pulse_cover_prompt", None)
+            return
         has_cover = self._archive_player_has_cover()
-        should_damage = dist <= safe_radius or not has_cover
-        if should_damage:
+        if not has_cover:
             self._apply_player_damage(32.0)
             self.player_hit_timer = max(self.player_hit_timer, 0.4)
             if "pulse_cover_prompt" in self.archive_flags:
@@ -3519,6 +3710,8 @@ class Game:
             self._draw_mirror_environment()
         elif self.current_floor == "F10":
             self._draw_sanctuary_environment()
+        elif self.current_floor == "F0":
+            self._draw_floor0_environment()
         self._draw_enemy_attack_fx()
         self._draw_enemies()
         self._draw_bullets()
@@ -3661,24 +3854,19 @@ class Game:
         if self.mirror_state.get("cleanup_done"):
             self.enemies = []
             return
-        axis_x = float(self.mirror_state.get("axis_x", self.map_data.size_pixels[0] / 2.0))
         base_points = [
             (212.0, 268.0),
             (212.0, 760.0),
         ]
-        spawn_positions: list[tuple[float, float, str]] = []
+        spawn_positions: list[tuple[float, float]] = []
         for bx, by in base_points:
             lx, ly = self._snap_to_passable(bx, by, max_steps=18)
-            spawn_positions.append((lx, ly, "left"))
-            mirror_x = axis_x + (axis_x - lx)
-            rx, ry = self._snap_to_passable(mirror_x, ly, max_steps=18)
-            spawn_positions.append((rx, ry, "right"))
+            spawn_positions.append((lx, ly))
         enemies: list[dict] = []
         scale = max(1, self.map_scale)
-        for sx, sy, side in spawn_positions:
+        for sx, sy in spawn_positions:
             px = float(sx * scale)
             py = float(sy * scale)
-            color = (255, 150, 170) if side == "left" else (150, 210, 255)
             enemy = {
                 "x": px,
                 "y": py,
@@ -3694,7 +3882,8 @@ class Game:
                 "aggro_radius": 420 * scale,
                 "lose_radius": 540 * scale,
                 "move_speed": settings.ENEMY_MOVE_SPEED * 0.95,
-                "color": color,
+                "color": (255, 150, 170),
+                "mirror_color": (150, 210, 255),
             }
             enemies.append(enemy)
         self.enemies = enemies
@@ -3705,6 +3894,7 @@ class Game:
         if not state or state.get("boss_state") == "active" or state.get("boss_state") == "defeated":
             return
         state["boss_state"] = "active"
+        self.story_flags["mirror_boss_triggered"] = True
         mx, my = self._mirror_sync_pos_scaled()
         state["boss_x"] = float(mx)
         state["boss_y"] = float(my)
@@ -5240,11 +5430,15 @@ class Game:
         flash_color = settings.ENEMY_HIT_FLASH_COLOR
         fade_total = max(0.001, settings.ENEMY_FADE_DURATION)
         ox, oy = self.map_offset
-        for enemy in self.enemies:
-            sx = int(enemy["x"] + ox)
-            sy = int(enemy["y"] + oy)
+        mirror_axis = None
+        mirror_max_x = None
+        if self.current_floor == "F15" and self.mirror_state:
+            mirror_axis = self._mirror_axis_x_scaled()
+            if self.map_data:
+                mirror_max_x = float(self.map_data.size_pixels[0] * max(1, self.map_scale))
+        def draw_enemy_at(enemy: dict, sx: int, sy: int, color_override: tuple[int, int, int] | None = None, alpha_scale: float = 1.0) -> None:
             state = enemy.get("state", "idle")
-            color = flash_color if enemy.get("flash_timer", 0.0) > 0.0 else enemy.get("color", base_color)
+            color = flash_color if enemy.get("flash_timer", 0.0) > 0.0 else (color_override or enemy.get("color", base_color))
             draw_r = int(enemy.get("radius", base_radius))
             alpha = 255
             if state == "dying":
@@ -5258,12 +5452,26 @@ class Game:
                 alpha = int(220 + 35 * progress)
             elif state == "idle":
                 alpha = 210
+            if alpha_scale != 1.0:
+                alpha = max(0, min(255, int(alpha * alpha_scale)))
             surf = pygame.Surface((draw_r * 2, draw_r * 2), pygame.SRCALPHA)
             pygame.draw.circle(surf, (*color, alpha), (draw_r, draw_r), draw_r)
             if state == "attacking":
                 pygame.draw.circle(surf, (255, 255, 255, alpha), (draw_r, draw_r), draw_r, width=2)
             self.screen.blit(surf, (sx - draw_r, sy - draw_r))
             self._draw_enemy_health_bar(enemy, sx, sy)
+        for enemy in self.enemies:
+            sx = int(enemy["x"] + ox)
+            sy = int(enemy["y"] + oy)
+            draw_enemy_at(enemy, sx, sy)
+            if mirror_axis is not None:
+                mirror_x = mirror_axis + (mirror_axis - float(enemy.get("x", 0.0)))
+                if mirror_max_x is not None:
+                    mirror_x = max(0.0, min(mirror_max_x, mirror_x))
+                mirror_sx = int(mirror_x + ox)
+                mirror_sy = int(float(enemy.get("y", 0.0)) + oy)
+                mirror_color = enemy.get("mirror_color")
+                draw_enemy_at(enemy, mirror_sx, mirror_sy, color_override=mirror_color, alpha_scale=0.85)
 
     def _draw_enemy_health_bar(self, enemy: dict, sx: int, sy: int) -> None:
         if enemy.get("state") == "dying":
@@ -5827,6 +6035,10 @@ class Game:
             return ["任务：击败镜像", "提示：电梯仍可使用"]
         if self.quest_stage == "mirror_exit":
             return ["任务：前往避难所", "目标：乘坐右侧电梯"]
+        if self.quest_stage == "floor0_awaken":
+            return ["任务：聆听实验记录", "提示：系统已锁定所有行动"]
+        if self.quest_stage == "floor0_done":
+            return ["任务：完成本轮迭代", "提示：按 Esc 返回标题界面"]
         if self.quest_stage == "sanctuary_find":
             return ["任务：寻找艾拉", "提示：靠近避难所中心区域"]
         if self.quest_stage == "sanctuary_agent":
@@ -6022,6 +6234,7 @@ class Game:
     # --- Cutscene / Guided dialog ---
     def _start_guidance_cutscene(self) -> None:
         self.cutscene_started = True
+        self.cutscene_on_complete = "boot"
         self.cutscene_lines = [
             {"speaker": "指引者", "text": "系统上线。欢迎回来，清除异常。正在初始化环境扫描..."},
             {"speaker": "指引者", "text": "检测到数据冗余，已清理。"},
@@ -6057,9 +6270,13 @@ class Game:
         self.cutscene_idx += 1
         if self.cutscene_idx >= len(self.cutscene_lines):
             self.cutscene_active = False
-            # unlock exploration task
-            self._set_quest_stage("explore")
-            self._unlock_achievement("boot_sequence")
+            mode = self.cutscene_on_complete
+            self.cutscene_on_complete = ""
+            if mode == "boot":
+                self._set_quest_stage("explore")
+                self._unlock_achievement("boot_sequence")
+            elif mode == "floor0":
+                self._floor0_on_cutscene_end()
             return
         self.cutscene_char_progress = 0.0
         self.cutscene_done_line = False
@@ -6084,7 +6301,8 @@ class Game:
             self.elevator_locked = False
         if stage in {"intro", "explore", "combat", "log", "lab_intro", "lab_cleanup",
                      "resonator_intro", "resonator_talk", "resonator_boss", "mirror_intro",
-                     "mirror_cleanup", "mirror_talk", "sanctuary_find", "sanctuary_agent"}:
+                     "mirror_cleanup", "mirror_talk", "sanctuary_find", "sanctuary_agent",
+                     "floor0_awaken", "floor0_done"}:
             self.elevator_locked = True
 
     def _draw_cutscene_dialog(self) -> None:
