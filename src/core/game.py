@@ -4249,6 +4249,8 @@ class Game:
                 int(mx + half_w),
                 int(my + half_h),
             )
+            if not (rect[0] <= px <= rect[2] and rect[1] <= py <= rect[3]):
+                return None
             return {"id": "mirror", "type": "npc", "rect": rect}
         drop = state.get("rifle_drop")
         if drop and not state.get("rifle_claimed"):
