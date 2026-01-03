@@ -1,0 +1,79 @@
+name: Build and Release Game
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build for ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            platform_name: windows
+            archive_ext: .zip
+          - os: ubuntu-latest
+            platform_name: linux
+            archive_ext: .tar.gz
+          - os: macos-latest
+            platform_name: macos
+            archive_ext: .zip
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      # --- Windows ---
+      - name: Build (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          pyinstaller --name MindscapeArk --onedir --windowed --clean --noconfirm --add-data "assets;assets" src/main.py
+          Rename-Item -Path "dist\MindscapeArk" -NewName "MindscapeArk-Windows"
+          Compress-Archive -Path "dist\MindscapeArk-Windows" -DestinationPath "MindscapeArk-Windows.zip"
+
+      # --- Linux ---
+      - name: Build (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          pyinstaller --name MindscapeArk --onedir --windowed --clean --noconfirm --add-data "assets:assets" src/main.py
+          mv dist/MindscapeArk dist/MindscapeArk-Linux
+          cd dist
+          tar -czvf ../MindscapeArk-Linux.tar.gz MindscapeArk-Linux/
+
+      # --- macOS ---
+      - name: Build (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          pyinstaller --name MindscapeArk --onedir --windowed --clean --noconfirm --add-data "assets:assets" src/main.py
+          cd dist
+          zip -r ../MindscapeArk-MacOS.zip MindscapeArk.app
+
+      # --- Release ---
+      - name: Upload to Release
+        uses: softprops/action-gh-release@v1
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: |
+            MindscapeArk-Windows.zip
+            MindscapeArk-Linux.tar.gz
+            MindscapeArk-MacOS.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
