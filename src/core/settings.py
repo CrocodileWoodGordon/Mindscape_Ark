@@ -1,9 +1,17 @@
 """Centralized configuration values and paths."""
 
 from pathlib import Path
+import sys
+
+
+def get_base_path() -> Path:
+    """Resolve project root for dev + PyInstaller onedir builds."""
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parents[2]
 
 # Paths (project root = MindscapeArk)
-BASE_DIR = Path(__file__).resolve().parents[2]
+BASE_DIR = get_base_path()
 ASSETS_ROOT = BASE_DIR / "assets"
 IMAGES_DIR = ASSETS_ROOT / "images"
 MAPS_DIR = ASSETS_ROOT / "maps"

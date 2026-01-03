@@ -54,6 +54,9 @@
 - 更新楼层跳转链：F25->F15、F15->F10、F10->F0，并新增Floor0地图配置以支持最终剧情层加载。
 - 修正第3层Boss脉冲判定：脉冲伤害仅在红圈内生效，圈外不再无掩护也受伤。
 - 更新第15层镜像空间：新增进入层指引对白，并让敌人呈现中轴线镜像效果。
+- 调整第15层镜像流程：改为先前往中轴线触发对话后生成四分区怪物，并更新任务提示与清怪流程。
+- 修复第3层清怪后错误跳到“终端已重新开放”：在档案馆层清怪不再覆盖任务阶段。
+- 重写资源路径基准：使用冻结/开发环境兼容的根目录解析，并在地图加载时传入基准路径，避免打包后资源丢失。
 ## In Progress
 - Pause menu options for save/achievements are stubbed and awaiting full implementations.
 - Save system hooks are reserved via `data/saves` but persistence is not wired up.

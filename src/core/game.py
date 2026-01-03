@@ -167,7 +167,7 @@ class Game:
 
     def _load_floor(self, path: Path, *, preserve_health: bool = True) -> None:
         prev_health = float(getattr(self, "player_health", settings.PLAYER_MAX_HEALTH))
-        self.map_data = load_map(path)
+        self.map_data = load_map(path, base_dir=settings.BASE_DIR)
         self.debug_menu_active = False
         self.debug_press_times.clear()
         self.debug_menu_options = []
@@ -1125,6 +1125,8 @@ class Game:
             "axis_locked": True,
             "intro_timer": 0.6,
             "intro_shown": False,
+            "intro_dialog_active": False,
+            "cleanup_spawned": False,
             "cleanup_done": False,
             "mirror_talk_ready": False,
             "mirror_talked": False,
@@ -1152,8 +1154,8 @@ class Game:
         }
         self._mirror_load_assets()
         self._mirror_apply_axis_lock(True)
-        self._mirror_spawn_enemies()
-        self.combat_active = bool(self.enemies)
+        self.enemies = []
+        self.combat_active = False
         self.elevator_locked = True
         self._set_quest_stage("mirror_intro")
 
@@ -2485,14 +2487,25 @@ class Game:
         state = self.mirror_state
         if not state.get("intro_shown"):
             timer = float(state.get("intro_timer", 0.0)) - dt
-            if timer <= 0.0:
-                state["intro_shown"] = True
-                self._show_dialog([
-                    "指引者：这是一个镜面空间，尝试利用我帮你创造的镜像协助完成任务。"
-                ], title="指引者")
-                self._set_quest_stage("mirror_cleanup")
-            else:
+            if timer > 0.0:
                 state["intro_timer"] = timer
+            else:
+                px, _ = self._player_map_pos()
+                axis_x = float(state.get("axis_x", self.map_data.size_pixels[0] / 2.0))
+                trigger_radius = max(8.0, float(self.map_data.cell_size))
+                if abs(px - axis_x) <= trigger_radius:
+                    state["intro_shown"] = True
+                    state["intro_dialog_active"] = True
+                    self._show_dialog([
+                        "指引者：这是一个镜面空间，尝试利用我帮你创造的镜像协助完成任务。"
+                    ], title="指引者")
+        if state.get("intro_dialog_active") and not self.dialog_lines:
+            state["intro_dialog_active"] = False
+            if not state.get("cleanup_spawned"):
+                state["cleanup_spawned"] = True
+                self._mirror_spawn_enemies()
+                self.combat_active = bool(self.enemies)
+                self._set_quest_stage("mirror_cleanup")
         if state.get("boss_state") == "active":
             self._mirror_update_boss(dt)
         if state.get("boss_state") == "defeated":
@@ -3854,14 +3867,26 @@ class Game:
         if self.mirror_state.get("cleanup_done"):
             self.enemies = []
             return
+        width, height = self.map_data.size_pixels
+        if not width or not height:
+            if self.map_surface:
+                w, h = self.map_surface.get_size()
+                width = w // max(1, self.map_scale)
+                height = h // max(1, self.map_scale)
+            else:
+                width = height = 0
+        if not width or not height:
+            return
         base_points = [
-            (212.0, 268.0),
-            (212.0, 760.0),
+            (width * 0.25, height * 0.25),
+            (width * 0.25, height * 0.75),
+            (width * 0.75, height * 0.25),
+            (width * 0.75, height * 0.75),
         ]
         spawn_positions: list[tuple[float, float]] = []
         for bx, by in base_points:
-            lx, ly = self._snap_to_passable(bx, by, max_steps=18)
-            spawn_positions.append((lx, ly))
+            sx, sy = self._snap_to_passable(bx, by, max_steps=18)
+            spawn_positions.append((sx, sy))
         enemies: list[dict] = []
         scale = max(1, self.map_scale)
         for sx, sy in spawn_positions:
@@ -5407,6 +5432,9 @@ class Game:
         return ((cx + 0.5) * cell_size, (cy + 0.5) * cell_size)
 
     def _on_enemies_cleared(self) -> None:
+        if self.current_floor == "F35":
+            self.combat_active = bool(self.archive_boss)
+            return
         self.combat_active = False
         if self.current_floor == "F50":
             self._unlock_achievement("first_cleanup")
@@ -6026,7 +6054,7 @@ class Game:
         if self.quest_stage == "resonator_exit":
             return ["任务：前往下一层", "目标：乘坐北侧电梯离开共鸣器"]
         if self.quest_stage == "mirror_intro":
-            return ["任务：等待镜像协议同步"]
+            return ["任务：前往中轴线处", "提示：接近中轴线触发镜像对话"]
         if self.quest_stage == "mirror_cleanup":
             return ["任务：携手镜像清理异常", "提示：中轴线无法穿越"]
         if self.quest_stage == "mirror_talk":
