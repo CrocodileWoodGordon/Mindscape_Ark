@@ -5,14 +5,21 @@ import sys
 
 
 def get_base_path() -> Path:
-    """Resolve project root for dev + PyInstaller onedir builds."""
+    """Resolve writable root for dev + PyInstaller onedir builds."""
     if getattr(sys, "frozen", False):
         return Path(sys.executable).resolve().parent
     return Path(__file__).resolve().parents[2]
 
+
+def get_bundle_path() -> Path:
+    """Resolve bundled resource root for PyInstaller onedir/onefile."""
+    if getattr(sys, "frozen", False):
+        return Path(getattr(sys, "_MEIPASS", Path(sys.executable).resolve().parent))
+    return Path(__file__).resolve().parents[2]
+
 # Paths (project root = MindscapeArk)
 BASE_DIR = get_base_path()
-ASSETS_ROOT = BASE_DIR / "assets"
+ASSETS_ROOT = get_bundle_path() / "assets"
 IMAGES_DIR = ASSETS_ROOT / "images"
 MAPS_DIR = ASSETS_ROOT / "maps"
 AUDIO_DIR = ASSETS_ROOT / "audio"
