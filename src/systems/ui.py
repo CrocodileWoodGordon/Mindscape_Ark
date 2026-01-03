@@ -719,3 +719,92 @@ class LoadMenu:
             self.screen.blit(title_surf, (row_rect.left + 10, row_rect.top + 6))
             self.screen.blit(info_surf, (row_rect.left + 10, row_rect.top + 28))
         self.screen.set_clip(prev_clip)
+
+
+class EndMenu:
+    def __init__(self, screen: pygame.Surface) -> None:
+        self.screen = screen
+        self.title = "终章结算"
+        self.options = [
+            ("查看成就", "end_achievements"),
+            ("返回标题", "end_return"),
+        ]
+        self.font_path = _resolve_font_path()
+        self.font_title = _load_font(self.font_path, 36)
+        self.font_btn = _load_font(self.font_path, 28)
+        self.font_hint = _load_font(self.font_path, 18)
+        self.panel_rect = self._build_panel_rect()
+        self.option_rects = self._build_option_rects()
+        self.selected_index = 0
+
+    def _build_panel_rect(self) -> pygame.Rect:
+        width = 360
+        height = 220
+        margin = 36
+        x = max(0, settings.WINDOW_WIDTH - margin - width)
+        y = max(0, settings.WINDOW_HEIGHT - margin - height)
+        return pygame.Rect(x, y, width, height)
+
+    def _build_option_rects(self) -> list[pygame.Rect]:
+        button_w = 240
+        button_h = 46
+        gap = 12
+        total_h = len(self.options) * button_h + (len(self.options) - 1) * gap
+        start_y = self.panel_rect.centery - total_h // 2 + 18
+        rects: list[pygame.Rect] = []
+        for idx in range(len(self.options)):
+            rect = pygame.Rect(0, 0, button_w, button_h)
+            rect.center = (self.panel_rect.centerx, start_y + idx * (button_h + gap))
+            rects.append(rect)
+        return rects
+
+    def handle_event(self, event: pygame.event.Event) -> str | None:
+        if event.type == pygame.KEYDOWN:
+            if event.key in (pygame.K_UP, pygame.K_w):
+                self.selected_index = (self.selected_index - 1) % len(self.options)
+            elif event.key in (pygame.K_DOWN, pygame.K_s):
+                self.selected_index = (self.selected_index + 1) % len(self.options)
+            elif event.key in (pygame.K_RETURN, pygame.K_SPACE):
+                return self.options[self.selected_index][1]
+            elif event.key == pygame.K_ESCAPE:
+                return "end_return"
+        if event.type == pygame.MOUSEMOTION:
+            for idx, rect in enumerate(self.option_rects):
+                if rect.collidepoint(event.pos):
+                    self.selected_index = idx
+                    break
+        if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            for idx, rect in enumerate(self.option_rects):
+                if rect.collidepoint(event.pos):
+                    self.selected_index = idx
+                    return self.options[idx][1]
+        return None
+
+    def update(self, dt: float) -> None:  # noqa: ARG002
+        return
+
+    def draw(self) -> None:
+        pygame.draw.rect(self.screen, (18, 22, 34), self.panel_rect, border_radius=14)
+        pygame.draw.rect(self.screen, (90, 130, 170), self.panel_rect, 2, border_radius=14)
+
+        title_surf = self.font_title.render(self.title, True, settings.TITLE_COLOR)
+        title_rect = title_surf.get_rect(center=(self.panel_rect.centerx, self.panel_rect.top + 38))
+        self.screen.blit(title_surf, title_rect)
+
+        mouse_pos = pygame.mouse.get_pos()
+        for idx, (label, _) in enumerate(self.options):
+            rect = self.option_rects[idx]
+            hovered = rect.collidepoint(mouse_pos)
+            selected = idx == self.selected_index
+            color = settings.BUTTON_HOVER_COLOR if (hovered or selected) else settings.BUTTON_COLOR
+            pygame.draw.rect(self.screen, color, rect, border_radius=10)
+            text = self.font_btn.render(label, True, settings.BUTTON_TEXT_COLOR)
+            text_rect = text.get_rect(center=rect.center)
+            self.screen.blit(text, text_rect)
+
+        hint = self.font_hint.render("↑/↓ 选择  Enter 确认", True, settings.TITLE_GLOW_COLOR)
+        hint_rect = hint.get_rect(center=(self.panel_rect.centerx, self.panel_rect.bottom - 26))
+        self.screen.blit(hint, hint_rect)
+
+    def reset(self) -> None:
+        self.selected_index = 0

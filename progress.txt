@@ -59,6 +59,9 @@
 - 重写资源路径基准：使用冻结/开发环境兼容的根目录解析，并在地图加载时传入基准路径，避免打包后资源丢失。
 - 更新 README 面向玩家的说明与玩法简介，并在醒目位置提示从右侧 Releases 下载对应系统版本。
 - 基于当前源代码重写 README，补齐已实现楼层/系统/存档成就与操作说明。
+- 重做成就列表以匹配现有楼层与剧情，并新增终章结算成就与镜像相关成就。
+- 在终章结束后加入结算菜单，可直接查看成就或返回标题，并调整相关输入逻辑。
+- 新增“无伤通关”成就，并在通关时检测是否全程未受伤。
 ## In Progress
 - Pause menu options for save/achievements are stubbed and awaiting full implementations.
 - Save system hooks are reserved via `data/saves` but persistence is not wired up.

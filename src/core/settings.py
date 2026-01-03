@@ -270,19 +270,21 @@ PLAYER_HIT_FLASH_COLOR = (255, 80, 120, 140)
 ACHIEVEMENTS = [
     {"id": "boot_sequence", "title": "系统重启", "desc": "完成启动序列与引导，进入行动阶段。"},
     {"id": "anomaly_photo", "title": "相框讯号", "desc": "查看宿舍相框中的异常合影。"},
-    {"id": "first_cleanup", "title": "初次清除", "desc": "清除苏醒之舱内首批数据畸变体。"},
+    {"id": "first_cleanup", "title": "初次清除", "desc": "清除宿舍区首批异常体。"},
     {"id": "anchor_log", "title": "锚定记录", "desc": "读取凯恩斯日志 001。"},
-    {"id": "lab_resolved", "title": "异常收束", "desc": "处理逻辑错误实体并稳定实验室。"},
-    {"id": "lab_unlock", "title": "通行权限", "desc": "解锁感官实验室电梯权限。"},
+    {"id": "lab_stabilized", "title": "实验室稳定", "desc": "清理感官实验室核心异常并解锁通行。"},
     {"id": "archive_core", "title": "记忆压制", "desc": "击溃记忆吞噬者并完成回闪。"},
     {"id": "archive_phase_three", "title": "红色脉冲", "desc": "记忆核心进入最终暴走阶段。"},
     {"id": "logic_relays", "title": "逻辑复位", "desc": "同步三台服务器，恢复逻辑核心秩序。"},
-    {"id": "logic_glitch", "title": "指令噪声", "desc": "遭遇逻辑核心指令错乱。"},
     {"id": "weapon_cache", "title": "散射火力", "desc": "解锁霰弹枪缓存。"},
     {"id": "resonator_echo", "title": "回声倾听者", "desc": "与六位情绪回声完成对话。"},
     {"id": "resonator_silence", "title": "共鸣平息", "desc": "击败情绪污染源。"},
+    {"id": "mirror_shatter", "title": "镜像破碎", "desc": "击败镜像空间的对立体。"},
+    {"id": "rifle_claimed", "title": "熵能步枪", "desc": "拾取镜像遗留的步枪。"},
     {"id": "humanitarian", "title": "人道主义", "desc": "拒绝系统指令，守住艾拉与核心装置。"},
     {"id": "efficiency_expert", "title": "效率至上", "desc": "服从指令，使用认知溶解剂。"},
+    {"id": "no_damage_clear", "title": "无伤通关", "desc": "在未受到任何伤害的情况下完成本轮迭代。"},
+    {"id": "ark_ending", "title": "终章结算", "desc": "完成本轮迭代并看到实验结论。"},
 ]
 ACHIEVEMENT_NOTICE_DURATION = 2.2
 

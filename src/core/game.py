@@ -11,7 +11,7 @@ from datetime import datetime
 import pygame
 
 from . import settings
-from ..systems.ui import AchievementsMenu, LoadMenu, PauseMenu, StartMenu
+from ..systems.ui import AchievementsMenu, EndMenu, LoadMenu, PauseMenu, StartMenu
 from ..maps.loader import load_map, MapData
 from ..systems import collision
 from ..systems import pathfinding
@@ -30,8 +30,11 @@ class Game:
         self.in_menu = True
         self.pause_menu = PauseMenu(self.screen)
         self.pause_menu_active = False
+        self.end_menu = EndMenu(self.screen)
+        self.end_menu_active = False
         self.achievements_menu = AchievementsMenu(self.screen)
         self.achievements_active = False
+        self.achievements_origin: str | None = None
         self.load_menu = LoadMenu(self.screen)
         self.load_menu_active = False
         self.achievement_defs = list(settings.ACHIEVEMENTS)
@@ -172,6 +175,8 @@ class Game:
         self.debug_press_times.clear()
         self.debug_menu_options = []
         self.debug_menu_index = 0
+        self.end_menu_active = False
+        self.achievements_origin = None
         self.map_scale = self._resolve_map_scale()
         self._base_collision_grid = [row[:] for row in self.map_data.collision_grid]
         self.map_surface = self._build_map_surface(self.map_data)
@@ -374,6 +379,13 @@ class Game:
             if action == "close_achievements":
                 self._close_achievements()
             return
+        if self.end_menu_active:
+            action = self.end_menu.handle_event(event)
+            if action == "end_achievements":
+                self._open_end_achievements()
+            elif action == "end_return":
+                self._restart_to_menu()
+            return
         if self.debug_menu_active:
             self._handle_debug_menu_event(event)
             return
@@ -532,13 +544,27 @@ class Game:
     def _pause_open_achievements(self) -> None:
         self.pause_menu_active = False
         self.achievements_active = True
+        self.achievements_origin = "pause"
+        self.achievements_menu.scroll_offset = 0.0
+        self.achievements_menu.scroll_dragging = False
+        self._reset_input_state()
+
+    def _open_end_achievements(self) -> None:
+        self.end_menu_active = False
+        self.achievements_active = True
+        self.achievements_origin = "end"
         self.achievements_menu.scroll_offset = 0.0
         self.achievements_menu.scroll_dragging = False
         self._reset_input_state()
 
     def _close_achievements(self) -> None:
         self.achievements_active = False
-        self._toggle_pause_menu(True)
+        origin = self.achievements_origin
+        self.achievements_origin = None
+        if origin == "pause":
+            self._toggle_pause_menu(True)
+        elif origin == "end" and self.current_floor == "F0":
+            self.end_menu_active = True
 
     def _unlock_achievement(self, achievement_id: str) -> None:
         if not achievement_id or achievement_id not in self.achievement_ids:
@@ -573,6 +599,8 @@ class Game:
     def _start_new_game(self) -> None:
         self.pause_menu_active = False
         self.achievements_active = False
+        self.end_menu_active = False
+        self.achievements_origin = None
         self.in_menu = False
         self.load_menu_active = False
         self.achievement_notice_text = ""
@@ -804,9 +832,11 @@ class Game:
             self.achievements_menu.update(dt)
         elif self.pause_menu_active:
             self.pause_menu.update(dt)
+        elif self.end_menu_active:
+            self.end_menu.update(dt)
         else:
             self._update_play(dt)
-        if not any((self.in_menu, self.intro_active, self.cutscene_active, self.pause_menu_active, self.achievements_active)):
+        if not any((self.in_menu, self.intro_active, self.cutscene_active, self.pause_menu_active, self.achievements_active, self.end_menu_active)):
             self._update_achievement_notice(dt)
         if not self.pause_menu_active:
             self._update_dialog(dt)
@@ -1315,15 +1345,20 @@ class Game:
         if not state:
             return
         state["cutscene_done"] = True
+        self._unlock_achievement("ark_ending")
+        if not self.story_flags.get("took_damage", False):
+            self._unlock_achievement("no_damage_clear")
         self._set_quest_stage("floor0_done")
+        self.end_menu_active = True
+        self.end_menu.reset()
 
     def _update_floor_f0(self, dt: float) -> None:  # noqa: ARG002
         state = self.floor0_state
         if not state:
             return
-        if state.get("cutscene_done") and not state.get("tip_shown") and not self.cutscene_active and not self.dialog_lines:
-            self._show_dialog(["按 Esc 返回标题界面，或按 Enter 回到主菜单。"], title="提示")
-            state["tip_shown"] = True
+        if state.get("cutscene_done") and not self.cutscene_active and not self.dialog_lines:
+            if not self.achievements_active and not self.end_menu_active:
+                self.end_menu_active = True
 
     def _draw_floor0_environment(self) -> None:
         state = self.floor0_state
@@ -2381,7 +2416,7 @@ class Game:
         self.lab_branch = "bypass"
         npc_state["state"] = "bypass"
         self.floor_flags["lab_branch_resolved"] = True
-        self._unlock_achievement("lab_resolved")
+        self._unlock_achievement("lab_stabilized")
         self._show_dialog(["指引者：记录选择，沿回廊绕行。警惕后续陷阱。"], title="指引者")
         for trap in self.lab_traps:
             if trap.get("id") in {"trap2", "trap3"}:
@@ -3169,8 +3204,7 @@ class Game:
         self.floor_flags["lab_exit_unlocked"] = True
         self._set_quest_stage("lab_exit")
         self.elevator_locked = False
-        self._unlock_achievement("lab_resolved")
-        self._unlock_achievement("lab_unlock")
+        self._unlock_achievement("lab_stabilized")
         self._show_dialog(["指引者：异常已清除，中枢电梯权限开放。"], title="指引者")
 
     def _handle_resonator_npc(self, trig: dict) -> None:
@@ -3704,6 +3738,11 @@ class Game:
             self.pause_menu.draw()
             pygame.display.flip()
             return
+        if self.end_menu_active:
+            self._render_play_base()
+            self.end_menu.draw()
+            pygame.display.flip()
+            return
         self._render_play_base()
         pygame.display.flip()
 
@@ -4105,6 +4144,7 @@ class Game:
         self.elevator_locked = False
         self.combat_active = False
         self.story_flags["mirror_boss_defeated"] = True
+        self._unlock_achievement("mirror_shatter")
         self._set_quest_stage("mirror_exit")
         self._show_dialog([
             "镜像破碎成无数碎片，残留的意识随风散尽。",
@@ -4188,6 +4228,7 @@ class Game:
         state["rifle_claimed"] = True
         state["rifle_drop"] = None
         self._unlock_weapon("entropy_rifle")
+        self._unlock_achievement("rifle_claimed")
         self._prime_weapon_ammo(reset_all=False)
         self._show_dialog([
             "获得武器：熵步枪。",
@@ -4901,6 +4942,7 @@ class Game:
     def _apply_player_damage(self, amount: float) -> None:
         if amount <= 0 or self.player_dead:
             return
+        self.story_flags["took_damage"] = True
         self.player_health = max(0.0, self.player_health - float(amount))
         self.player_hit_timer = max(self.player_hit_timer, settings.PLAYER_HIT_FLASH_TIME)
         self._reset_regen_cooldown()
@@ -4927,6 +4969,8 @@ class Game:
         self.start_menu.reset()
         self.pause_menu_active = False
         self.achievements_active = False
+        self.end_menu_active = False
+        self.achievements_origin = None
         self.intro_active = False
         self.load_menu_active = False
         self.achievement_notice_text = ""
@@ -5975,6 +6019,8 @@ class Game:
 
     def _draw_debug_coords(self) -> None:
         # Show player map coordinates in bottom-right for debugging
+        if self.end_menu_active:
+            return
         px = int(self.player_rect.centerx / self.map_scale)
         py = int(self.player_rect.centery / self.map_scale)
         text = f"({px}, {py})"
@@ -6066,7 +6112,7 @@ class Game:
         if self.quest_stage == "floor0_awaken":
             return ["任务：聆听实验记录", "提示：系统已锁定所有行动"]
         if self.quest_stage == "floor0_done":
-            return ["任务：完成本轮迭代", "提示：按 Esc 返回标题界面"]
+            return ["任务：完成本轮迭代", "提示：在结算面板查看成就或返回标题"]
         if self.quest_stage == "sanctuary_find":
             return ["任务：寻找艾拉", "提示：靠近避难所中心区域"]
         if self.quest_stage == "sanctuary_agent":
